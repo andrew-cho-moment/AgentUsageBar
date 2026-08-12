@@ -15,15 +15,6 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Bundle id of the vendor's own menu bar app, when one exists. Used to avoid
-    /// showing a second copy of that vendor's logo, and to park next to it.
-    var vendorMenuBarBundleID: String? {
-        switch self {
-        case .claude: return "com.anthropic.claudefordesktop"
-        case .codex:  return nil          // Codex is CLI-only; ChatGPT.app owns no status item
-        }
-    }
-
     /// Where the user changes their own spend limit.
     var manageURL: URL {
         switch self {

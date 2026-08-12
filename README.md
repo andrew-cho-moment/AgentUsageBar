@@ -4,7 +4,7 @@ A macOS menu bar app showing Claude and Codex usage, including how much of a mon
 dollar budget has been spent.
 
 ```
-◉ 16%/6%  <> 22%
+✳ 16%/6%   >_ 22%
 ```
 
 Each provider appears only when you are signed in to it. Numbers are the rate-limit
@@ -89,16 +89,18 @@ app is ever signed with a Developer ID.
 
 ## Menu bar behavior
 
-The app parks immediately to the **right** of Claude Desktop's own item and suppresses
-its own Claude mark while Claude Desktop is running, so the Claude logo never appears
-twice and the bar reads `[Claude logo] 22%/7% <> 45%`. It finds that slot by reading
-`NSStatusItem Preferred Position Item-0` from `com.anthropic.claudefordesktop`'s
-preferences — no Accessibility permission needed — and asks for one step below it, since
-larger values sit further left.
+Each signed-in provider gets its own mark followed by its percentages: `✳` for Claude,
+`>_` for Codex. Both always show, so a number is never left without a label.
 
-That key is undocumented and the position is advisory. If either the parking or the
-detection fails, the mark is shown, so a number is never left without a label. Codex has
-no menu bar app of its own, so its mark always shows.
+`>_` is the Codex CLI's own motif. OpenAI's hexagonal knot was tried first and collapses
+into a blob at 14pt, where the interlacing that carries the shape is finer than a pixel.
+
+The app makes no attempt to sit beside Claude Desktop's or ChatGPT's own menu bar items.
+Claude Desktop publishes its slot as `NSStatusItem Preferred Position Item-0`, so
+following it worked, but ChatGPT publishes nothing and macOS reports every menu bar
+window as owned by Control Center, so its position cannot be read without an
+Accessibility grant this app does not ask for. Following one vendor and not the other
+was worse than following neither.
 
 ## Diagnostics
 
