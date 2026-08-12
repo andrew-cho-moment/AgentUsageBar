@@ -90,15 +90,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         let timer = Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshAll() }
         }
+        // A usage percentage does not need second-accurate scheduling, and the slack lets
+        // the OS wake this timer alongside others instead of on its own.
+        timer.tolerance = 30
         timers.append(timer)
     }
 
     private func refreshAll() {
         Task { [weak self] in
             guard let self else { return }
-            await self.store.refresh()
-            await self.statusManager.fetch()
-            self.menuBar.render()
+            // Independent endpoints; serialising them only lengthened the window in
+            // which the menu bar shows stale numbers.
+            async let usage: Void = self.store.refresh()
+            async let status: Void = self.statusManager.fetch()
+            _ = await (usage, status)
+            self.menuBar.setNeedsRender()
         }
     }
 
@@ -132,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private func observeStoreChanges() {
         store.objectWillChange
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.menuBar.render() }
+            .sink { [weak self] _ in self?.menuBar.setNeedsRender() }
             .store(in: &cancellables)
     }
 

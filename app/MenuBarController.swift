@@ -67,12 +67,21 @@ enum Glyphs {
 
 @MainActor
 final class MenuBarController {
-    private let statusItem: NSStatusItem
+    private var statusItem: NSStatusItem
     private let store: AppStore
+    private let onLeftClick: () -> Void
+    private let onQuit: () -> Void
 
     /// True when the position hint was accepted into our own defaults, meaning we are
     /// most likely sitting beside the vendor's item and can drop our copy of its logo.
     private var parkedNextTo: Set<Provider> = []
+
+    /// Vendor apps currently showing a menu bar item of their own, tracked from workspace
+    /// notifications. Each `NSRunningApplication` lookup crosses into LaunchServices, so
+    /// rendering reads this instead of asking again.
+    private var runningVendors: Set<Provider> = []
+
+    private var renderScheduled = false
 
     private static let autosaveName = "AgentUsageBar"
     private static let positionKeyPrefix = "NSStatusItem Preferred Position "
@@ -86,25 +95,49 @@ final class MenuBarController {
 
     init(store: AppStore, onLeftClick: @escaping () -> Void, onQuit: @escaping () -> Void) {
         self.store = store
+        self.onLeftClick = onLeftClick
+        self.onQuit = onQuit
 
+        runningVendors = Self.currentVendors()
         // The position hint is consulted when the item is created, so it must be
         // written first.
-        Self.applyAdjacencyHints(into: &parkedNextTo)
+        Self.applyAdjacencyHints(for: runningVendors, into: &parkedNextTo)
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.autosaveName = Self.autosaveName
-
-        if let button = statusItem.button {
-            button.target = ClickRouter.shared
-            button.action = #selector(ClickRouter.handle(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-            ClickRouter.shared.onLeftClick = onLeftClick
-            ClickRouter.shared.onQuit = onQuit
-            ClickRouter.shared.statusItem = statusItem
-        }
-
+        statusItem = Self.makeStatusItem()
+        attachHandlers()
         observeVendorApps()
         render()
+    }
+
+    private static func makeStatusItem() -> NSStatusItem {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.autosaveName = autosaveName
+        return item
+    }
+
+    private func attachHandlers() {
+        guard let button = statusItem.button else { return }
+        button.target = ClickRouter.shared
+        button.action = #selector(ClickRouter.handle(_:))
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        ClickRouter.shared.onLeftClick = onLeftClick
+        ClickRouter.shared.onQuit = onQuit
+        ClickRouter.shared.statusItem = statusItem
+    }
+
+    /// A refresh publishes about seven separate changes, and every one of them lands
+    /// here. Collapsing to a single render per turn of the run loop keeps the status item
+    /// from being rebuilt for each intermediate state.
+    func setNeedsRender() {
+        guard !renderScheduled else { return }
+        renderScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.renderScheduled = false
+                self.render()
+            }
+        }
     }
 
     // MARK: Rendering
@@ -192,23 +225,59 @@ final class MenuBarController {
     /// park beside it. If either is false the number would be orphaned without a mark,
     /// so the mark stays.
     private func shouldShowGlyph(for provider: Provider) -> Bool {
-        guard let bundleID = provider.vendorMenuBarBundleID else { return true }
+        guard provider.vendorMenuBarBundleID != nil else { return true }
         guard parkedNextTo.contains(provider) else { return true }
-        return !Self.isRunning(bundleID: bundleID)
+        return !runningVendors.contains(provider)
     }
 
-    private static func isRunning(bundleID: String) -> Bool {
-        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+    private static func currentVendors() -> Set<Provider> {
+        var vendors: Set<Provider> = []
+        for provider in Provider.allCases {
+            guard let bundleID = provider.vendorMenuBarBundleID,
+                  !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
+            else { continue }
+            vendors.insert(provider)
+        }
+        return vendors
     }
 
+    /// Every app launch on the system posts here, so the vendor check happens before any
+    /// work rather than after a full render.
     private func observeVendorApps() {
         let center = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification,
                      NSWorkspace.didTerminateApplicationNotification] {
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.render() }
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey]
+                        as? NSRunningApplication,
+                      let bundleID = app.bundleIdentifier,
+                      Provider.allCases.contains(where: { $0.vendorMenuBarBundleID == bundleID })
+                else { return }
+                MainActor.assumeIsolated { self?.vendorSetChanged() }
             }
         }
+    }
+
+    /// A status item reads its slot only when it is created, so following a vendor app
+    /// that launched after us means building a new item, not moving the one we have.
+    private func vendorSetChanged() {
+        let vendors = Self.currentVendors()
+        guard vendors != runningVendors else { return }
+        runningVendors = vendors
+
+        if vendors.isEmpty {
+            // Nothing left to sit beside. Staying put is harmless once our mark returns.
+            parkedNextTo = []
+        } else {
+            // The outgoing item's slot is written back to defaults as it goes, so it has
+            // to be gone before the new hint is placed.
+            NSStatusBar.system.removeStatusItem(statusItem)
+            parkedNextTo = []
+            Self.applyAdjacencyHints(for: vendors, into: &parkedNextTo)
+            statusItem = Self.makeStatusItem()
+            attachHandlers()
+        }
+        render()
     }
 
     // MARK: Adjacency
@@ -217,12 +286,17 @@ final class MenuBarController {
     /// because this app is unsandboxed, and needing no Accessibility permission — then
     /// asks AppKit for the same neighbourhood. The key is undocumented and the position
     /// is advisory, so this is strictly best-effort.
-    private static func applyAdjacencyHints(into parked: inout Set<Provider>) {
+    private static func applyAdjacencyHints(for vendors: Set<Provider>,
+                                            into parked: inout Set<Provider>) {
         for provider in Provider.allCases {
-            guard let bundleID = provider.vendorMenuBarBundleID,
-                  isRunning(bundleID: bundleID),
-                  let position = CFPreferencesCopyAppValue(vendorPositionKey as CFString,
-                                                           bundleID as CFString) as? NSNumber
+            guard vendors.contains(provider),
+                  let bundleID = provider.vendorMenuBarBundleID
+            else { continue }
+            // A vendor that launched after us wrote its slot after we last looked, and
+            // the cached copy of its domain would still be empty.
+            CFPreferencesAppSynchronize(bundleID as CFString)
+            guard let position = CFPreferencesCopyAppValue(vendorPositionKey as CFString,
+                                                          bundleID as CFString) as? NSNumber
             else { continue }
 
             let slot = position.doubleValue - tieBreakRightward
