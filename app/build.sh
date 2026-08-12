@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Build script for AgentUsageBar.
 #
-# Signing: set CODESIGN_IDENTITY to a Developer ID to produce a distributable build.
-# The default is ad-hoc ("-"), which is all a locally installed personal app needs.
-# Ad-hoc signatures cannot be notarized.
+# Signing: when AgentUsageBar Dev exists, the default uses it so rebuilt apps keep the
+# same Keychain identity. Set CODESIGN_IDENTITY to a Developer ID for distribution, or
+# to "-" to request an ad-hoc build explicitly. Ad-hoc signatures cannot be notarized.
 #
 # Pass --no-launch to skip opening the app at the end (useful in a build loop).
 
@@ -13,7 +13,14 @@ APP_NAME="AgentUsageBar"
 BUNDLE="${APP_NAME}.app"
 APP_PATH="build/${BUNDLE}"
 DEPLOYMENT_TARGET="14.0"
-CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+LOCAL_SIGNING_IDENTITY="AgentUsageBar Dev"
+if [ -z "${CODESIGN_IDENTITY+x}" ]; then
+    signing_identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+    case "$signing_identities" in
+        *\"$LOCAL_SIGNING_IDENTITY\"*) CODESIGN_IDENTITY="$LOCAL_SIGNING_IDENTITY" ;;
+        *) CODESIGN_IDENTITY="-" ;;
+    esac
+fi
 LAUNCH=1
 [ "${1:-}" = "--no-launch" ] && LAUNCH=0
 
@@ -74,7 +81,7 @@ find "$APP_PATH" -name '._*' -delete 2>/dev/null || true
 find "$APP_PATH" -name '.DS_Store' -delete 2>/dev/null || true
 
 if [ "$CODESIGN_IDENTITY" = "-" ]; then
-    echo "  signing ad-hoc (set CODESIGN_IDENTITY for a Developer ID build)"
+    echo "  signing ad-hoc (run make_signing_cert.sh for stable Keychain access)"
     codesign --force --options runtime --sign - "$APP_PATH"
 else
     echo "  signing as ${CODESIGN_IDENTITY}"

@@ -51,14 +51,15 @@ This app persists no credential of its own.
 ```bash
 cd app
 ./make_signing_cert.sh          # once: creates a stable local signing identity
-CODESIGN_IDENTITY="AgentUsageBar Dev" ./build.sh
+./build.sh
 ```
 
 Then drag `app/build/AgentUsageBar.app` to `/Applications`.
 
-`./build.sh` alone works and signs ad-hoc, but ad-hoc signatures change on every build,
-which invalidates the Keychain grant each time. The certificate exists to give the app a
-stable identity; it is not a Developer ID and cannot be notarized or distributed.
+When `AgentUsageBar Dev` exists, `./build.sh` uses it automatically. Otherwise the build
+falls back to ad-hoc signing, whose identity changes with each binary and invalidates the
+Keychain grant. Set `CODESIGN_IDENTITY=-` only when an ad-hoc build is intentional. The
+local certificate is not a Developer ID and cannot be notarized or distributed.
 
 Requires macOS 14+. Builds a universal binary.
 

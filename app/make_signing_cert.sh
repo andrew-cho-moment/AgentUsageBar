@@ -3,21 +3,14 @@ set -euo pipefail
 
 # Creates a local, self-signed code-signing identity for AgentUsageBar.
 #
-# Why this exists: an ad-hoc signature ("codesign --sign -") produces a new code
-# identity on every build. macOS keys two things to that identity:
-#
-#   1. UNUserNotificationCenter authorization. Ad-hoc signed apps are refused
-#      outright with "Notifications are not allowed for this application".
-#   2. Keychain ACLs. The "Always Allow" grant for reading Claude Code's OAuth
-#      token is invalidated whenever the identity changes, so every rebuild
-#      re-prompts.
-#
-# A stable self-signed certificate fixes both. It is NOT a Developer ID and cannot
-# be notarized or distributed; it exists purely so this machine's copy has a
-# consistent identity.
+# Why this exists: an ad-hoc signature ("codesign --sign -") identifies each build by
+# its code hash. The "Always Allow" grant for reading Claude Code's OAuth token stops
+# matching after every rebuild, so macOS prompts again. A stable self-signed certificate
+# keeps that identity consistent. It is NOT a Developer ID and cannot be notarized,
+# distributed, or authorize native notifications.
 #
 # Run once:   ./make_signing_cert.sh
-# Then build: CODESIGN_IDENTITY="AgentUsageBar Dev" ./build.sh
+# Then build: ./build.sh
 #
 # To undo:    security delete-certificate -c "AgentUsageBar Dev" \
 #                 ~/Library/Keychains/login.keychain-db
@@ -29,7 +22,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 if security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$IDENTITY"; then
     echo "Identity '$IDENTITY' already exists. Nothing to do."
-    echo "Build with: CODESIGN_IDENTITY=\"$IDENTITY\" ./build.sh"
+    echo "Build with: ./build.sh"
     exit 0
 fi
 
@@ -84,7 +77,7 @@ security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$WORK/cert.pe
 echo
 if security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -q "$IDENTITY"; then
     echo "✅ Identity '$IDENTITY' is ready."
-    echo "   Build with: CODESIGN_IDENTITY=\"$IDENTITY\" ./build.sh"
+    echo "   Build with: ./build.sh"
 else
     echo "❌ Identity not visible to codesign. Inspect with:" >&2
     echo "   security find-identity -v -p codesigning" >&2
