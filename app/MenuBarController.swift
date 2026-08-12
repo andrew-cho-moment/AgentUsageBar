@@ -6,6 +6,7 @@ import AppKit
 /// a template PNG, so the real mark is used when their app is installed and a drawn path
 /// stands in when it is not. Upstream re-rendered its icon on every poll for one of
 /// exactly three colors.
+@MainActor
 enum Glyphs {
     private struct Key: Hashable {
         let provider: Provider
@@ -85,13 +86,13 @@ enum Glyphs {
         return nil
     }
 
-    /// Stand-in for Anthropic's radiating mark, scaled from a 16pt design to 14pt.
+    /// Stand-in for Anthropic's radiating mark, drawn from a 16pt design.
     private static func sparkPath() -> NSBezierPath {
         let points: [(CGFloat, CGFloat)] = [
             (8, 1), (9, 6), (13, 3), (10, 7), (15, 8), (10, 9), (13, 13), (9, 10),
             (8, 15), (7, 10), (3, 13), (6, 9), (1, 8), (6, 7), (3, 3), (7, 6),
         ]
-        let scale: CGFloat = 14.0 / 16.0
+        let scale = pointSize / 16.0
         let path = NSBezierPath()
         for (index, point) in points.enumerated() {
             let scaled = NSPoint(x: point.0 * scale, y: point.1 * scale)
@@ -105,15 +106,16 @@ enum Glyphs {
     /// cannot be reproduced by hand at 14pt: every approximation tried collapsed into a
     /// blob, since the interlacing that carries the shape is finer than a pixel.
     private static func promptPath() -> NSBezierPath {
+        let k = pointSize / 14.0          // designed in a 14pt box
         let path = NSBezierPath()
-        path.lineWidth = 1.6
+        path.lineWidth = 1.6 * k
         path.lineCapStyle = .round
         path.lineJoinStyle = .round
-        path.move(to: NSPoint(x: 2.8, y: 9.8))
-        path.line(to: NSPoint(x: 6.2, y: 7.0))
-        path.line(to: NSPoint(x: 2.8, y: 4.2))
-        path.move(to: NSPoint(x: 7.6, y: 3.9))
-        path.line(to: NSPoint(x: 11.5, y: 3.9))
+        path.move(to: NSPoint(x: 2.8 * k, y: 9.8 * k))
+        path.line(to: NSPoint(x: 6.2 * k, y: 7.0 * k))
+        path.line(to: NSPoint(x: 2.8 * k, y: 4.2 * k))
+        path.move(to: NSPoint(x: 7.6 * k, y: 3.9 * k))
+        path.line(to: NSPoint(x: 11.5 * k, y: 3.9 * k))
         return path
     }
 }
@@ -267,8 +269,8 @@ final class MenuBarController {
 
 // MARK: - Click routing
 
-/// `NSStatusBarButton` needs an ObjC target/action pair, which an actor-isolated class
-/// cannot supply directly.
+/// Routes the Objective-C target/action callbacks that AppKit delivers on the main actor.
+@MainActor
 final class ClickRouter: NSObject {
     static let shared = ClickRouter()
 
