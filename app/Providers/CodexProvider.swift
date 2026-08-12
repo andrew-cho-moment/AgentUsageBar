@@ -198,7 +198,6 @@ final class CodexProvider: UsageProvider, Sendable {
                 throw UsageError.unauthorized
             }
             await tokenCache.write(fresh)
-            debugLog("Codex access token refreshed in memory; auth.json untouched")
             return try await fetchUsage(accessToken: fresh)
         }
     }
@@ -239,8 +238,7 @@ final class CodexProvider: UsageProvider, Sendable {
             budgetReading: reading,
             creditBalanceMinor: balanceMinor,
             creditUnit: creditUnit,
-            unrecognized: [],
-            fetchedAt: Date()
+            unrecognized: []
         )
     }
 

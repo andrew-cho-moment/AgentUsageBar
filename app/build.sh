@@ -1,19 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build script for AgentUsageBar.
-#
-# Signing: when AgentUsageBar Dev exists, the default uses it so rebuilt apps keep the
-# same Keychain identity. Set CODESIGN_IDENTITY to a Developer ID for distribution, or
-# to "-" to request an ad-hoc build explicitly. Ad-hoc signatures cannot be notarized.
-#
-# Pass --no-launch to skip opening the app at the end (useful in a build loop).
-
 APP_NAME="AgentUsageBar"
-BUNDLE="${APP_NAME}.app"
-APP_PATH="build/${BUNDLE}"
-DEPLOYMENT_TARGET="14.0"
+BUNDLE_ID="com.andrewcho.agentusagebar"
+APP_PATH="build/${APP_NAME}.app"
+EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_NAME"
+FETCHER="$APP_PATH/Contents/Helpers/AgentUsageFetcher"
+CREDENTIAL_HELPER="$APP_PATH/Contents/Helpers/CredentialHelper"
+LOGIN_ITEM_HELPER="$APP_PATH/Contents/Helpers/LoginItemHelper"
 LOCAL_SIGNING_IDENTITY="AgentUsageBar Dev"
+
 if [ -z "${CODESIGN_IDENTITY+x}" ]; then
     signing_identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
     case "$signing_identities" in
@@ -21,89 +17,144 @@ if [ -z "${CODESIGN_IDENTITY+x}" ]; then
         *) CODESIGN_IDENTITY="-" ;;
     esac
 fi
-LAUNCH=1
-[ "${1:-}" = "--no-launch" ] && LAUNCH=0
-
-SOURCES=(
-    AgentUsageBar.swift
-    AppState.swift
-    Models.swift
-    Support.swift
-    StatusManager.swift
-    MenuBarController.swift
-    UsageView.swift
-    Providers/ClaudeProvider.swift
-    Providers/CodexProvider.swift
-)
-
-FRAMEWORKS=(AppKit Carbon UserNotifications ServiceManagement Security)
 
 cd "$(dirname "$0")"
-
-echo "Building ${APP_NAME}..."
-
-# Fresh build dir: stale bundles accumulate extended attributes from prior signings,
-# which codesign then rejects as "resource fork / detritus".
 rm -rf build
-mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
+mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Helpers" \
+    "$APP_PATH/Contents/Resources" build/tests
 
-cp Info.plist "$APP_PATH/Contents/"
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -fobjc-arc \
+    -Oz \
+    -flto \
+    -fvisibility=hidden \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -framework AppKit \
+    -framework Carbon \
+    -Wl,-dead_strip \
+    -Wl,-x \
+    -o "$EXECUTABLE" \
+    AgentUsageBar.m \
+    FetcherProtocol.m \
+    SnapshotCache.c \
+    UsagePanelView.m
 
-if [ -f "${APP_NAME}.icns" ]; then
-    cp "${APP_NAME}.icns" "$APP_PATH/Contents/Resources/"
-    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile ${APP_NAME}" "$APP_PATH/Contents/Info.plist" 2>/dev/null \
-        || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string ${APP_NAME}" "$APP_PATH/Contents/Info.plist"
-fi
+swiftc \
+    -parse-as-library \
+    -Osize \
+    -whole-module-optimization \
+    -lto=llvm-full \
+    -Xfrontend -disable-reflection-metadata \
+    -Xfrontend -disable-reflection-names \
+    -target arm64-apple-macos14.0 \
+    -Xlinker -dead_strip \
+    -Xlinker -x \
+    -o "$FETCHER" \
+    FetcherMain.swift \
+    StatusFetcher.swift \
+    Models.swift \
+    FetcherSupport.swift \
+    Providers/ClaudeProvider.swift \
+    Providers/CodexProvider.swift
 
-framework_flags=()
-for fw in "${FRAMEWORKS[@]}"; do framework_flags+=(-framework "$fw"); done
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -Oz \
+    -flto \
+    -fvisibility=hidden \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -framework CoreFoundation \
+    -framework Security \
+    -Wl,-dead_strip \
+    -Wl,-x \
+    -o "$CREDENTIAL_HELPER" \
+    CredentialMain.c
 
-for arch in arm64 x86_64; do
-    echo "  compiling ${arch}..."
-    swiftc -parse-as-library -O \
-        -o "$APP_PATH/Contents/MacOS/${APP_NAME}_${arch}" \
-        "${SOURCES[@]}" \
-        "${framework_flags[@]}" \
-        -target "${arch}-apple-macos${DEPLOYMENT_TARGET}"
-done
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -fobjc-arc \
+    -Oz \
+    -flto \
+    -fvisibility=hidden \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -framework Foundation \
+    -framework ServiceManagement \
+    -Wl,-dead_strip \
+    -Wl,-x \
+    -o "$LOGIN_ITEM_HELPER" \
+    LoginItemMain.m
 
-lipo -create -output "$APP_PATH/Contents/MacOS/${APP_NAME}" \
-    "$APP_PATH/Contents/MacOS/${APP_NAME}_arm64" \
-    "$APP_PATH/Contents/MacOS/${APP_NAME}_x86_64"
-rm "$APP_PATH/Contents/MacOS/${APP_NAME}_arm64" "$APP_PATH/Contents/MacOS/${APP_NAME}_x86_64"
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -Oz \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -o build/tests/OversizedFetcher \
+    tests/OversizedFetcher.c
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -Oz \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -o build/tests/ProtocolTests \
+    tests/ProtocolTests.m \
+    FetcherProtocol.m
+build/tests/ProtocolTests build/tests/OversizedFetcher
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -Oz \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -o build/tests/SnapshotCacheTests \
+    tests/SnapshotCacheTests.c \
+    SnapshotCache.c
+build/tests/SnapshotCacheTests
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -Oz \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -o build/tests/FetcherProtocolHarness \
+    tests/FetcherProtocolHarness.m \
+    FetcherProtocol.m
 
+cp Info.plist "$APP_PATH/Contents/Info.plist"
+cp AgentUsageBar.icns "$APP_PATH/Contents/Resources/AgentUsageBar.icns"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP_PATH/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AgentUsageBar" \
+    "$APP_PATH/Contents/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AgentUsageBar" \
+        "$APP_PATH/Contents/Info.plist"
 printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
-chmod 755 "$APP_PATH/Contents/MacOS/${APP_NAME}"
 
-# Strip anything codesign treats as detritus.
 xattr -cr "$APP_PATH"
-find "$APP_PATH" -name '._*' -delete 2>/dev/null || true
-find "$APP_PATH" -name '.DS_Store' -delete 2>/dev/null || true
+codesign --force --options runtime --identifier "$BUNDLE_ID" \
+    --sign "$CODESIGN_IDENTITY" "$FETCHER"
+codesign --force --options runtime --identifier "$BUNDLE_ID.credential-helper" \
+    --sign "$CODESIGN_IDENTITY" "$CREDENTIAL_HELPER"
+codesign --force --options runtime --identifier "$BUNDLE_ID.login-item-helper" \
+    --sign "$CODESIGN_IDENTITY" "$LOGIN_ITEM_HELPER"
+codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"
+codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-if [ "$CODESIGN_IDENTITY" = "-" ]; then
-    echo "  signing ad-hoc (run make_signing_cert.sh for stable Keychain access)"
-    codesign --force --options runtime --sign - "$APP_PATH"
-else
-    echo "  signing as ${CODESIGN_IDENTITY}"
-    # An explicitly requested identity that cannot be used is a hard error: silently
-    # falling back to ad-hoc would only surface later, at notarization.
-    if ! codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"; then
-        echo "!! Signing with '${CODESIGN_IDENTITY}' failed. Not falling back to ad-hoc." >&2
-        exit 1
-    fi
-fi
-# Captured rather than piped: `| grep -q` closes the pipe early, and under pipefail
-# codesign's resulting SIGPIPE reads as a verification failure.
-verify_output="$(codesign --verify --verbose=2 "$APP_PATH" 2>&1 || true)"
-case "$verify_output" in
-    *"valid on disk"*) ;;
-    *)
-        echo "!! Signature verification failed:" >&2
-        echo "$verify_output" >&2
-        exit 1
-        ;;
-esac
-
-echo "Built ${APP_PATH}"
-[ "$LAUNCH" = "1" ] && open "$APP_PATH"
-exit 0
+echo "Built $APP_PATH for Apple silicon"

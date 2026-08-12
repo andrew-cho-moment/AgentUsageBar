@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// Reads Claude usage from the same endpoint Claude Code's own `/usage` command uses,
 /// authenticated with the OAuth token `claude login` already stored in the Keychain.
@@ -9,8 +8,8 @@ final class ClaudeProvider: UsageProvider, Sendable {
     let provider: Provider = .claude
 
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
-    private static let keychainService = "Claude Code-credentials"
     private static let betaHeader = "oauth-2025-04-20"
+    private static let maximumCredentialBytes = 64 * 1024
 
     /// `~/.claude.json` can grow large, so the plan label is read at most once per launch.
     private actor PlanLabelCache {
@@ -33,6 +32,13 @@ final class ClaudeProvider: UsageProvider, Sendable {
 
         let claudeAiOauth: OAuth?
         let accessToken: String?
+    }
+
+    private enum CredentialHelperExit: Int32 {
+        case success
+        case failure
+        case usage
+        case notFound
     }
 
     private struct ClaudeConfig: Decodable {
@@ -145,19 +151,33 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// The Keychain item holds JSON rather than a bare token. Reading it prompts for
     /// consent the first time, since the item belongs to Claude Code.
     private static func accessToken() throws -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess else {
-            if status == errSecItemNotFound { throw UsageError.notLoggedIn(.claude) }
-            throw UsageError.keychain(status: status)
+        let fetcher = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        let helper = fetcher.deletingLastPathComponent().appendingPathComponent(
+            "CredentialHelper")
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = helper
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            throw UsageError.malformed(field: "credential helper")
         }
-        guard let data = item as? Data,
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationReason == .exit,
+            let status = CredentialHelperExit(rawValue: process.terminationStatus)
+        else {
+            throw UsageError.malformed(field: "credential helper exit")
+        }
+        switch status {
+        case .success: break
+        case .notFound: throw UsageError.notLoggedIn(.claude)
+        case .failure: throw UsageError.keychain
+        case .usage: throw UsageError.malformed(field: "credential helper arguments")
+        }
+        guard !data.isEmpty, data.count <= maximumCredentialBytes,
             let credentials = try? JSONDecoder().decode(KeychainCredentials.self, from: data)
         else {
             throw UsageError.malformed(field: "keychain payload")
@@ -205,8 +225,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
             budgetReading: Self.decodeBudget(response),
             creditBalanceMinor: nil,
             creditUnit: nil,
-            unrecognized: unrecognized,
-            fetchedAt: Date()
+            unrecognized: unrecognized
         )
     }
 

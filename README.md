@@ -1,153 +1,121 @@
 # AgentUsageBar
 
-A macOS menu bar app showing Claude and Codex usage, including how much of a monthly
-dollar budget has been spent.
+AgentUsageBar is an Apple-silicon macOS menu-bar app for Claude and Codex usage.
 
-```
+```text
 ✳ 16%/6%   >_ 22%
 ```
 
-Each provider appears only when you are signed in to it. Numbers are the rate-limit
-windows that provider actually reports; the dollar budget lives in the popover.
+The resident process is a 106 KB Objective-C executable. It keeps only fixed-size C
+records, one status item, and an optional manually drawn panel. Swift, URLSession,
+ServiceManagement, JSON decoding, Keychain access, and provider response objects live in
+helper processes that exit after each operation.
 
-Private fork of [Artzainnn/ClaudeUsageBar](https://github.com/Artzainnn/ClaudeUsageBar)
-with Codex support ported from
-[Artzainnn/CodexUsageBar](https://github.com/Artzainnn/CodexUsageBar).
+## Resource use
 
-## What it shows
+Measured on macOS 26.5.2 after fetching both providers:
 
-**Claude** — session (5 hour), weekly (7 day), any model-scoped weekly caps, and:
+| State | Physical footprint | Idle CPU |
+|---|---:|---:|
+| Previous Swift/AppKit build after using the panel | 25.7 MB | 0.0% |
+| Current build, panel closed | about 13 MB | 0.0% |
+| Current build, full panel visible | about 15 MB | 0.0% |
 
-```
-Monthly budget                              Manage →
-████████████████████░░░░░░░░░░░░  61%
-$611.53 of $1,000.00 · $388.47 left · 61%
-```
+The remaining memory is macOS infrastructure. A minimal process containing only
+`NSApplication` and `NSStatusItem` measures about 12.4 MB on the same system. AppKit's
+allocator zones, Objective-C metadata, Core Animation, and shared-framework writable
+pages establish that floor. A sub-1 MB process cannot expose a supported, native menu-bar
+item with the same UI.
 
-**Codex** — whichever rate-limit windows the account reports, plus per-model meters
-like GPT-5.3-Codex-Spark once they rise above 1%.
+Rust would still call AppKit and pay the same floor. Objective-C keeps the resident host
+smaller because it uses AppKit directly without loading the Swift runtime. The Swift
+helper remains useful for typed provider decoding because its memory disappears when it
+exits.
 
-**Claude service status** — a severity dot and, during an incident, an expandable panel.
-Only the services you tick in Settings count.
+## Refresh behavior
+
+The app loads its last validated 8,480-byte snapshot at launch. A normal login launch
+starts no fetch helper, touches no credential, and opens no network connection. A first
+launch with no cache fetches once to seed it. The app performs no periodic usage polling
+while hidden. It refreshes usage when the panel opens with data older than 60 seconds, or
+when the user selects Refresh.
+
+Claude outage alerts use a separate status-only helper every 30 minutes when alerts are
+enabled. That helper does not access Keychain or provider usage APIs. Disabling alerts
+removes the timer. Timers use a five-minute tolerance so macOS can coalesce wakeups.
+
+This design trades short refresh-time process launches and fresh network connections for
+the smallest persistent memory footprint.
 
 ## Authentication
 
-No cookies to paste. Both providers are read from credentials their CLIs already wrote:
+AgentUsageBar reads credentials already owned by the provider CLIs:
 
-| Provider | Source | Endpoint |
+| Provider | Credential source | Usage endpoint |
 |---|---|---|
-| Claude | Keychain item `Claude Code-credentials` (written by `claude login`) | `api.anthropic.com/api/oauth/usage` |
-| Codex  | `~/.codex/auth.json` (written by `codex login`) | `chatgpt.com/backend-api/wham/usage` |
+| Claude | Keychain item `Claude Code-credentials` | `api.anthropic.com/api/oauth/usage` |
+| Codex | `~/.codex/auth.json` | `chatgpt.com/backend-api/wham/usage` |
 
-On first launch macOS asks permission to read Claude Code's Keychain item. Click
-**Always Allow**.
+The app stores no credentials. Codex token refreshes remain in the helper's memory and do
+not modify the CLI file.
 
-Codex tokens are refreshed on a 401 against `auth.openai.com/oauth/token` and kept **in
-memory only** — `~/.codex/auth.json` stays owned by the CLI and is never written to.
-This app persists no credential of its own.
+Keychain access lives in a dedicated 52 KB C helper with no provider or UI code. Unchanged
+source produces the same Mach-O UUID and macOS code hash across rebuilds. Provider and UI
+changes therefore preserve an existing Always Allow grant. The helper uses the stable
+identifier `com.andrewcho.agentusagebar.credential-helper` and the same signing
+certificate on every build. Ad-hoc signatures can trigger another prompt.
+
+## Features
+
+- Claude session, weekly, scoped, and monthly-budget usage
+- Codex rate-limit windows, model meters, credit balances, and reported budgets
+- User-supplied monthly limits when a provider reports spend without a limit
+- Per-service Claude status tracking and outage notifications
+- System, Dark, and Light appearance modes
+- Global Command-U panel shortcut
+- Start at login by default, with a saved opt-out
+- Right-click Refresh and Quit menu
+
+The panel uses one custom `NSView` with manual drawing and hit testing. It creates no
+Auto Layout graph and no control hierarchy. Closing it releases the panel, event monitors,
+view, and backing surfaces, then asks the allocator to return unused pages.
 
 ## Build
 
+Requirements: macOS 14 or newer, Xcode command-line tools, and Apple silicon.
+
 ```bash
 cd app
-./make_signing_cert.sh          # once: creates a stable local signing identity
+./make_signing_cert.sh  # once, for a stable local Keychain identity
 ./build.sh
 ```
 
-Then drag `app/build/AgentUsageBar.app` to `/Applications`.
+The build runs fifteen deterministic protocol and cache tests, compiles size-optimized
+arm64 binaries with full link-time optimization, strips local symbols, signs every helper
+and the app, and verifies the nested signature. The result is
+`app/build/AgentUsageBar.app`.
 
-When `AgentUsageBar Dev` exists, `./build.sh` uses it automatically. Otherwise the build
-falls back to ad-hoc signing, whose identity changes with each binary and invalidates the
-Keychain grant. Set `CODESIGN_IDENTITY=-` only when an ad-hoc build is intentional. The
-local certificate is not a Developer ID and cannot be notarized or distributed.
+When the `AgentUsageBar Dev` identity exists, the build uses it automatically. Otherwise
+it produces an ad-hoc build. Set `CODESIGN_IDENTITY` to use a Developer ID or another
+explicit identity.
 
-Requires macOS 14+. Builds a universal binary.
+## Architecture
 
-## Budgets
-
-The Claude budget comes from the API. It is read from `spend.limit` / `spend.used`
-(`{amount_minor, currency, exponent}` triples), falling back to `extra_usage`
-(`monthly_limit`, `used_credits`).
-
-If a provider reports spend but no limit, Settings offers a **Monthly budget** field to
-supply one. A budget filled in this way is labelled as yours, not as billed truth. The
-field is hidden for providers that report their own limit.
-
-**Codex budgets are credits, never dollars.** Codex exposes a monthly cap at
-`spend_control.individual_limit`, but only on Business/Edu/Enterprise seats, and it is
-credit-denominated with no currency field and no OpenAI-published credit-to-dollar rate.
-It is rendered as `7,761 of 100,000 credits`, and it is `null` on personal Plus/Pro
-accounts.
-
-## Notifications
-
-Claude outage alerts only, and only for the services you track.
-
-`UNUserNotificationCenter` requires an Apple-issued Team ID, which a self-signed build
-does not have, so delivery falls back to `osascript`. Alerts then appear attributed to
-Script Editor rather than to this app. The native path is preferred automatically if the
-app is ever signed with a Developer ID.
-
-## Menu bar behavior
-
-AgentUsageBar starts at login by default. The Open at Login checkbox in Settings saves
-an explicit opt-out, so launching the app manually does not turn the login item back on.
-
-Each signed-in provider gets its own mark followed by its percentages. Both always show,
-so a number is never left without a label.
-
-The visible menu-bar values refresh every 30 minutes while the popover is closed and on
-every open. Claude status checks run in the background only when outage notifications
-are enabled; otherwise they run when the popover opens.
-
-The marks are the vendors' real ones, read at launch from the template PNGs inside their
-installed apps (`TrayIconTemplate` in Claude.app, `chatgptTemplate` in ChatGPT.app) and
-tinted to the usage tier, since template art is black plus alpha. Nothing is copied into
-this repo. When a vendor app is absent the mark falls back to a drawn path: a starburst
-for Claude, `>_` for Codex. Hand-drawn approximations of OpenAI's knot were tried and all
-collapsed into a blob, because the interlacing that carries the shape is finer than a
-pixel at this size.
-
-Marks render at 16pt rather than the 14pt the text implies. Anthropic's carries a dozen
-thin rays that fall under a pixel below that, which is why the vendors draw their own
-nearer 18pt.
-
-The app makes no attempt to sit beside Claude Desktop's or ChatGPT's own menu bar items.
-Claude Desktop publishes its slot as `NSStatusItem Preferred Position Item-0`, so
-following it worked, but ChatGPT publishes nothing and macOS reports every menu bar
-window as owned by Control Center, so its position cannot be read without an
-Accessibility grant this app does not ask for. Following one vendor and not the other
-was worse than following neither.
-
-## Diagnostics
-
-Nothing is logged by default: both providers return bearer-authenticated account data,
-and the unified log is readable by any process running as you.
-
-```bash
-launchctl setenv AGENTUSAGEBAR_DEBUG 1
-open /Applications/AgentUsageBar.app
-/usr/bin/log show --last 5m --predicate 'subsystem == "com.andrewcho.agentusagebar"'
-launchctl unsetenv AGENTUSAGEBAR_DEBUG
+```text
+AgentUsageBar (resident Objective-C/AppKit host)
+  ├─ AgentUsageFetcher -- usage mode
+  │    provider files + URLSession + typed Swift decoders
+  │    └─ CredentialHelper
+  │         one bounded Keychain read, then exits
+  ├─ AgentUsageFetcher -- status-only mode
+  │    status.claude.com + optional notification
+  └─ LoginItemHelper
+       ServiceManagement registration on first launch or setting change
 ```
 
-Use `/usr/bin/log`; `log` is a zsh builtin that shadows it.
+The fetcher sends a bounded, versioned tab-separated protocol. The host rejects duplicate
+providers, unknown enum values, out-of-order records, oversized output, truncated fields,
+and invalid numeric ranges before replacing its snapshot.
 
-## Removed from upstream
-
-- The update and announcement channel, which polled the upstream author's `latest.json`
-  every 3 hours and rendered author-controlled banner text, buttons and OS notification
-  titles on your machine.
-- The donation link.
-- Session and budget threshold notifications.
-- Cookie storage. Upstream kept a full claude.ai session cookie in plaintext
-  `UserDefaults`, readable by any process running as you.
-- The Accessibility permission prompt. Carbon hot keys never needed it.
-
-## Limits
-
-Both providers use internal, undocumented endpoints that can change without notice. The
-Claude OAuth endpoint is the one Claude Code itself uses, so it is the more stable.
-
-When a schema change does land, unrecognized values are surfaced in the popover rather
-than silently skipped.
+Both providers use internal endpoints that can change. The protocol and provider decoders
+surface unexpected values instead of silently treating new states as valid.
