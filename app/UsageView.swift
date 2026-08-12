@@ -17,7 +17,8 @@ struct UsageView: View {
     @State private var measuredHeight: CGFloat = 260
     @Environment(\.colorScheme) private var colorScheme
 
-    private let width: CGFloat = 360
+    static let width: CGFloat = 360
+    /// Preferred ceiling; the screen the popover opens on can lower it further.
     private let maxHeight: CGFloat = 600
 
     var body: some View {
@@ -31,7 +32,9 @@ struct UsageView: View {
                         }
                     )
             }
-            .frame(width: width, height: min(max(measuredHeight, 120), maxHeight))
+            .frame(width: Self.width,
+                   height: min(max(measuredHeight, 120),
+                               min(maxHeight, store.availablePopoverHeight)))
             // Dark: a light scrim over the native material. Light: near-opaque, or a
             // dark desktop bleeds through as murky blue-gray.
             .background(
@@ -42,6 +45,7 @@ struct UsageView: View {
             .onPreferenceChange(ContentHeightKey.self) { value in
                 guard value > 0 else { return }
                 measuredHeight = value
+                debugLog("popover content measured at \(Int(value))pt")
             }
             .onChange(of: showingSettings) { _, isOpen in
                 guard isOpen else { return }

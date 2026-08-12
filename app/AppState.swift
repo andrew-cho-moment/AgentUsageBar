@@ -141,7 +141,13 @@ final class AppStore: ObservableObject {
     /// popover can appear already scrolled past the first provider.
     @Published private(set) var openToken = UUID()
 
-    func notePopoverOpened() { openToken = UUID() }
+    /// Height the popover may occupy on the screen it is about to open on.
+    @Published private(set) var availablePopoverHeight: CGFloat = 600
+
+    func notePopoverOpened(availableHeight: CGFloat) {
+        availablePopoverHeight = availableHeight
+        openToken = UUID()
+    }
 
     let settings: Settings
 

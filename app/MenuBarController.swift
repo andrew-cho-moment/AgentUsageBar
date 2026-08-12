@@ -78,6 +78,11 @@ final class MenuBarController {
     private static let positionKeyPrefix = "NSStatusItem Preferred Position "
     /// Undocumented but long-standing: AppKit persists status item placement here.
     private static let vendorPositionKey = "NSStatusItem Preferred Position Item-0"
+    /// Larger values sit further left, so asking for one step below the vendor's puts us
+    /// immediately to its right. Copying the vendor's value verbatim left the tie for
+    /// AppKit to break, and it put us on the left, so our Codex mark read to the left of
+    /// Claude Desktop's logo.
+    private static let tieBreakRightward = 1.0
 
     init(store: AppStore, onLeftClick: @escaping () -> Void, onQuit: @escaping () -> Void) {
         self.store = store
@@ -220,10 +225,10 @@ final class MenuBarController {
                                                            bundleID as CFString) as? NSNumber
             else { continue }
 
-            UserDefaults.standard.set(position.doubleValue,
-                                      forKey: positionKeyPrefix + autosaveName)
+            let slot = position.doubleValue - tieBreakRightward
+            UserDefaults.standard.set(slot, forKey: positionKeyPrefix + autosaveName)
             parked.insert(provider)
-            debugLog("Parking next to \(bundleID) at \(position.doubleValue)")
+            debugLog("Parking right of \(bundleID) (\(position.doubleValue)) at \(slot)")
             // One status item can only sit in one place; the first vendor found wins.
             break
         }

@@ -21,6 +21,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusManager: StatusManager!
     private var menuBar: MenuBarController!
     private var popover: NSPopover!
+    /// Held with its concrete type so the popover can be sized from SwiftUI's own
+    /// measurement before it is shown.
+    private var hosting: NSHostingController<UsageView>!
 
     /// The Carbon handler is installed once for the process lifetime. Upstream
     /// reinstalled it on every enable, so toggling the shortcut off and on left two
@@ -41,15 +44,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         store = AppStore(settings: settings)
         statusManager = StatusManager(settings: settings)
 
-        popover = NSPopover()
-        popover.behavior = .transient
-        popover.delegate = self
-        popover.contentSize = NSSize(width: 360, height: 320)
-        popover.contentViewController = NSHostingController(rootView: UsageView(
+        hosting = NSHostingController(rootView: UsageView(
             store: store,
             statusManager: statusManager,
             settings: settings
         ))
+
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.delegate = self
+        popover.contentViewController = hosting
 
         menuBar = MenuBarController(
             store: store,
@@ -158,13 +162,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func showPopover() {
         guard let button = menuBarButton else { return }
-        store.notePopoverOpened()
+        store.notePopoverOpened(availableHeight: Self.availableHeight(for: button))
+        sizePopoverToContent()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+
+        if debugLoggingEnabled {
+            // The frame is only final after SwiftUI has measured and resized it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                MainActor.assumeIsolated { self?.logPopoverGeometry() }
+            }
+        }
 
         // Opening is the moment the numbers matter most; refresh if they are stale.
         if let lastUpdated = store.lastUpdated, Date().timeIntervalSince(lastUpdated) > 60 {
             refreshAll()
         }
+    }
+
+    /// NSPopover reads `contentSize` to choose where on screen it sits. SwiftUI measures
+    /// its content only once the view lays out, so showing first and measuring second
+    /// left AppKit growing the window upward from an origin fixed for the old, smaller
+    /// size — pushing the top off the screen. Settling the size first means the position
+    /// is computed from the height the popover will actually have.
+    private func sizePopoverToContent() {
+        hosting.view.layoutSubtreeIfNeeded()
+        popover.contentSize = hosting.sizeThatFits(
+            in: CGSize(width: UsageView.width, height: CGFloat.greatestFiniteMagnitude)
+        )
+    }
+
+    /// Room below the menu bar on the screen the status item lives on, so the popover is
+    /// capped by the display it opens on rather than by a guess.
+    private static func availableHeight(for button: NSStatusBarButton) -> CGFloat {
+        guard let screen = button.window?.screen ?? NSScreen.main else { return 600 }
+        return max(200, screen.visibleFrame.height - 16)
+    }
+
+    private func logPopoverGeometry() {
+        guard let window = popover.contentViewController?.view.window else {
+            debugLog("popover: no window")
+            return
+        }
+        let frame = window.frame
+        guard let screen = menuBarButton?.window?.screen else {
+            debugLog("popover frame=\(frame), no screen")
+            return
+        }
+        let barBottom = screen.visibleFrame.maxY
+        debugLog("popover frame=\(frame) content=\(popover.contentSize) "
+               + "menuBarBottom=\(barBottom) screen=\(screen.frame) "
+               + "overTop=\(Int(frame.maxY - barBottom)) "
+               + "underBottom=\(Int(screen.frame.minY - frame.minY))")
     }
 
     private var menuBarButton: NSStatusBarButton? {

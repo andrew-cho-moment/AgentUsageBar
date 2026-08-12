@@ -89,10 +89,12 @@ app is ever signed with a Developer ID.
 
 ## Menu bar behavior
 
-The app suppresses its own Claude mark when Claude Desktop is running **and** it managed
-to park beside Claude Desktop's own item, so the Claude logo never appears twice. It
-finds that slot by reading `NSStatusItem Preferred Position Item-0` from
-`com.anthropic.claudefordesktop`'s preferences — no Accessibility permission needed.
+The app parks immediately to the **right** of Claude Desktop's own item and suppresses
+its own Claude mark while Claude Desktop is running, so the Claude logo never appears
+twice and the bar reads `[Claude logo] 22%/7% <> 45%`. It finds that slot by reading
+`NSStatusItem Preferred Position Item-0` from `com.anthropic.claudefordesktop`'s
+preferences — no Accessibility permission needed — and asks for one step below it, since
+larger values sit further left.
 
 That key is undocumented and the position is advisory. If either the parking or the
 detection fails, the mark is shown, so a number is never left without a label. Codex has
