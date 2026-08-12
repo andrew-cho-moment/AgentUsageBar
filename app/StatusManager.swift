@@ -1,25 +1,25 @@
-import SwiftUI
-import UserNotifications
+import AppKit
 import Security
+import UserNotifications
 
 // MARK: - Types
 
 /// Statuspage component states, ordered by how bad they are. Typed rather than raw
 /// strings so severity ranking is total and a new state cannot silently rank as fine.
-enum ComponentStatus: String, Comparable {
+enum ComponentStatus: String, Comparable, Decodable, Sendable {
     case operational
-    case underMaintenance    = "under_maintenance"
+    case underMaintenance = "under_maintenance"
     case degradedPerformance = "degraded_performance"
-    case partialOutage       = "partial_outage"
-    case majorOutage         = "major_outage"
+    case partialOutage = "partial_outage"
+    case majorOutage = "major_outage"
 
     private var severity: Int {
         switch self {
-        case .operational:          return 0
-        case .underMaintenance:     return 1
-        case .degradedPerformance:  return 1
-        case .partialOutage:        return 2
-        case .majorOutage:          return 3
+        case .operational: return 0
+        case .underMaintenance: return 1
+        case .degradedPerformance: return 1
+        case .partialOutage: return 2
+        case .majorOutage: return 3
         }
     }
 
@@ -29,20 +29,20 @@ enum ComponentStatus: String, Comparable {
 
     var indicator: StatusIndicator {
         switch severity {
-        case 0:  return .none
-        case 1:  return .minor
-        case 2:  return .major
+        case 0: return .none
+        case 1: return .minor
+        case 2: return .major
         default: return .critical
         }
     }
 
     var label: String {
         switch self {
-        case .operational:          return "operational"
-        case .underMaintenance:     return "maintenance"
-        case .degradedPerformance:  return "degraded"
-        case .partialOutage:        return "partial outage"
-        case .majorOutage:          return "major outage"
+        case .operational: return "operational"
+        case .underMaintenance: return "maintenance"
+        case .degradedPerformance: return "degraded"
+        case .partialOutage: return "partial outage"
+        case .majorOutage: return "major outage"
         }
     }
 }
@@ -50,17 +50,17 @@ enum ComponentStatus: String, Comparable {
 enum StatusIndicator: String {
     case none, minor, major, critical
 
-    var color: Color {
+    var nsColor: NSColor {
         switch self {
-        case .none:     return .green
-        case .minor:    return .yellow
-        case .major:    return .orange
-        case .critical: return .red
+        case .none: return .systemGreen
+        case .minor: return .systemYellow
+        case .major: return .systemOrange
+        case .critical: return .systemRed
         }
     }
 }
 
-enum IncidentStatus: String {
+enum IncidentStatus: String, Decodable, Sendable {
     case investigating, identified, monitoring, resolved, postmortem, scheduled
     case inProgress = "in_progress"
     case verifying
@@ -73,19 +73,19 @@ enum IncidentStatus: String {
         }
     }
 
-    var badgeColor: Color {
+    var nsColor: NSColor {
         switch self {
-        case .investigating:            return Color.red.opacity(0.8)
-        case .identified:               return .orange
-        case .monitoring, .verifying:   return .blue
-        case .resolved, .completed:     return .green
-        case .postmortem:               return .gray
-        case .scheduled, .inProgress:   return .blue
+        case .investigating: return .systemRed
+        case .identified: return .systemOrange
+        case .monitoring, .verifying: return .systemBlue
+        case .resolved, .completed: return .systemGreen
+        case .postmortem: return .systemGray
+        case .scheduled, .inProgress: return .systemBlue
         }
     }
 }
 
-struct StatusIncident: Identifiable, Equatable {
+struct StatusIncident: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let status: IncidentStatus
@@ -94,7 +94,7 @@ struct StatusIncident: Identifiable, Equatable {
     let componentIDs: [String]
 }
 
-struct StatusComponent: Identifiable, Equatable {
+struct StatusComponent: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let status: ComponentStatus
@@ -112,13 +112,13 @@ struct StatusComponent: Identifiable, Equatable {
 /// Anthropic's status page only. Codex outages are deliberately not tracked: the
 /// notification scope chosen for this build is Claude service outages.
 @MainActor
-final class StatusManager: ObservableObject {
+final class StatusManager {
     private(set) var description: String = "All systems operational"
     private(set) var incidents: [StatusIncident] = []
     private(set) var components: [StatusComponent] = []
     private(set) var lastUpdated: Date?
     private(set) var hasFetched = false
-    private(set) var unrecognized: [String] = []
+    var onViewChange: (() -> Void)?
 
     private static let endpoint = URL(string: "https://status.claude.com/api/v2/summary.json")!
     private static let lastIndicatorKey = "last_effective_indicator"
@@ -127,18 +127,9 @@ final class StatusManager: ObservableObject {
     private var isFetching = false
     private var entityTag: String?
     private var lastModified: String?
-    private var isViewActive = false
 
     init(settings: Settings) {
         self.settings = settings
-    }
-
-    func setViewActive(_ active: Bool) {
-        isViewActive = active
-    }
-
-    private func publishViewChange() {
-        if isViewActive { objectWillChange.send() }
     }
 
     // MARK: Filtered views
@@ -195,22 +186,26 @@ final class StatusManager: ObservableObject {
         isFetching = true
         defer { isFetching = false }
 
-        var request = URLRequest(url: Self.endpoint,
-                                 cachePolicy: .reloadIgnoringLocalCacheData,
-                                 timeoutInterval: 15)
+        var request = URLRequest(
+            url: Self.endpoint,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 15)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let entityTag { request.setValue(entityTag, forHTTPHeaderField: "If-None-Match") }
-        if let lastModified { request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since") }
+        if let lastModified {
+            request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since")
+        }
 
         guard let (data, response) = try? await HTTPClient.shared.data(for: request),
-              let http = response as? HTTPURLResponse else {
+            let http = response as? HTTPURLResponse
+        else {
             debugLog("Status fetch failed")
             return
         }
         if http.statusCode == 304 {
-            publishViewChange()
             lastUpdated = Date()
+            onViewChange?()
             return
         }
         guard http.statusCode == 200 else {
@@ -230,65 +225,87 @@ final class StatusManager: ObservableObject {
         let description: String
         let incidents: [StatusIncident]
         let components: [StatusComponent]
-        let unrecognized: [String]
     }
 
-    /// Pure decode, deliberately off the main actor: only `apply` touches published state.
+    private struct SummaryResponse: Decodable, Sendable {
+        struct Summary: Decodable, Sendable {
+            let description: String
+        }
+
+        struct Incident: Decodable, Sendable {
+            struct Update: Decodable, Sendable {
+                let body: String?
+                let createdAt: String?
+
+                private enum CodingKeys: String, CodingKey {
+                    case body
+                    case createdAt = "created_at"
+                }
+            }
+
+            struct ComponentReference: Decodable, Sendable {
+                let id: String
+            }
+
+            let id: String
+            let name: String
+            let status: IncidentStatus
+            let updatedAt: String?
+            let incidentUpdates: [Update]
+            let components: [ComponentReference]
+
+            private enum CodingKeys: String, CodingKey {
+                case id, name, status, components
+                case updatedAt = "updated_at"
+                case incidentUpdates = "incident_updates"
+            }
+        }
+
+        struct Component: Decodable, Sendable {
+            let id: String
+            let name: String
+            let status: ComponentStatus
+        }
+
+        let status: Summary
+        let incidents: [Incident]
+        let components: [Component]
+    }
+
+    /// Pure decode, deliberately off the main actor: only `apply` touches live state.
     private nonisolated static func parse(_ data: Data) -> Parsed? {
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let status = JSONNumber.object(json["status"]),
-              let description = JSONNumber.string(status["description"]) else { return nil }
-
-        var unrecognized: [String] = []
-
-        var incidents: [StatusIncident] = []
-        for raw in JSONNumber.array(json["incidents"]) ?? [] {
-            guard let id = JSONNumber.string(raw["id"]),
-                  let name = JSONNumber.string(raw["name"]),
-                  let statusValue = JSONNumber.string(raw["status"]) else { continue }
-            guard let status = IncidentStatus(rawValue: statusValue) else {
-                unrecognized.append("incident status '\(statusValue)'")
-                continue
+        do {
+            let response = try JSONDecoder().decode(SummaryResponse.self, from: data)
+            let incidents = response.incidents.compactMap { incident -> StatusIncident? in
+                guard incident.status.isOpen else { return nil }
+                return StatusIncident(
+                    id: incident.id,
+                    name: incident.name,
+                    status: incident.status,
+                    latestUpdate: incident.incidentUpdates.first?.body ?? "",
+                    updatedAt: DateParse.iso(
+                        incident.incidentUpdates.first?.createdAt ?? incident.updatedAt
+                    ),
+                    componentIDs: incident.components.map(\.id)
+                )
             }
-            guard status.isOpen else { continue }
-
-            let updates = JSONNumber.array(raw["incident_updates"]) ?? []
-            let dateString = JSONNumber.string(updates.first?["created_at"])
-                ?? JSONNumber.string(raw["updated_at"])
-            incidents.append(StatusIncident(
-                id: id,
-                name: name,
-                status: status,
-                latestUpdate: JSONNumber.string(updates.first?["body"]) ?? "",
-                updatedAt: DateParse.iso(dateString),
-                componentIDs: (JSONNumber.array(raw["components"]) ?? [])
-                    .compactMap { JSONNumber.string($0["id"]) }
-            ))
-        }
-
-        var components: [StatusComponent] = []
-        for raw in JSONNumber.array(json["components"]) ?? [] {
-            guard let id = JSONNumber.string(raw["id"]),
-                  let name = JSONNumber.string(raw["name"]),
-                  let statusValue = JSONNumber.string(raw["status"]) else { continue }
-            guard let status = ComponentStatus(rawValue: statusValue) else {
-                unrecognized.append("component status '\(statusValue)'")
-                continue
+            let components = response.components.map {
+                StatusComponent(id: $0.id, name: $0.name, status: $0.status)
             }
-            components.append(StatusComponent(id: id, name: name, status: status))
+            return Parsed(
+                description: response.status.description,
+                incidents: incidents, components: components)
+        } catch {
+            debugLog("Status response decode failed: \(error.localizedDescription)")
+            return nil
         }
-
-        return Parsed(description: description, incidents: incidents,
-                      components: components, unrecognized: unrecognized)
     }
 
     private func apply(_ parsed: Parsed) {
         let isFirstFetch = !hasFetched
 
-        publishViewChange()
         description = parsed.description
         incidents = parsed.incidents
-        unrecognized = parsed.unrecognized
         if !parsed.components.isEmpty {
             components = parsed.components
             // First real component list seen: track everything except Claude for
@@ -310,12 +327,14 @@ final class StatusManager: ObservableObject {
             notifyChange(to: current)
         }
         UserDefaults.standard.set(current.rawValue, forKey: Self.lastIndicatorKey)
+        onViewChange?()
     }
 
     private func notifyChange(to indicator: StatusIndicator) {
         guard settings.statusNotificationsEnabled else { return }
         let title = indicator == .none ? "Claude is back online" : "Claude status: \(description)"
-        let body = indicator == .none
+        let body =
+            indicator == .none
             ? "All systems operational"
             : "Open status.claude.com for details"
         Notifier.post(title: title, body: body)
@@ -360,8 +379,9 @@ enum Notifier {
                 Task { @MainActor in
                     nativeAuthorization = granted && error == nil ? .authorized : .unavailable
                     if let error {
-                        debugLog("Native notifications unavailable (\(error.localizedDescription)); "
-                               + "falling back to osascript delivery")
+                        debugLog(
+                            "Native notifications unavailable (\(error.localizedDescription)); "
+                                + "falling back to osascript delivery")
                     } else {
                         debugLog("Native notification authorization granted: \(granted)")
                     }
@@ -382,13 +402,17 @@ enum Notifier {
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
         var staticCode: SecStaticCode?
         guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
-              let staticCode else { return false }
+            let staticCode
+        else { return false }
         var information: CFDictionary?
-        guard SecCodeCopySigningInformation(staticCode,
-                                            SecCSFlags(rawValue: kSecCSSigningInformation),
-                                            &information) == errSecSuccess,
-              let values = information as? [String: Any],
-              let team = values[kSecCodeInfoTeamIdentifier as String] as? String else {
+        guard
+            SecCodeCopySigningInformation(
+                staticCode,
+                SecCSFlags(rawValue: kSecCSSigningInformation),
+                &information) == errSecSuccess,
+            let values = information as? [String: Any],
+            let team = values[kSecCodeInfoTeamIdentifier as String] as? String
+        else {
             return false
         }
         return !team.isEmpty
@@ -399,8 +423,9 @@ enum Notifier {
         content.title = title
         content.body = body
         content.sound = .default
-        let request = UNNotificationRequest(identifier: UUID().uuidString,
-                                            content: content, trigger: nil)
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request) { error in
             if let error { debugLog("Notification post failed: \(error.localizedDescription)") }
         }
@@ -410,8 +435,9 @@ enum Notifier {
     /// has to make the text a valid AppleScript string literal. Titles and bodies come
     /// from Anthropic's status page, which is not trusted input.
     private static func postViaOSAScript(title: String, body: String) {
-        let script = "display notification \"\(appleScriptEscaped(body))\" "
-                   + "with title \"\(appleScriptEscaped(title))\""
+        let script =
+            "display notification \"\(appleScriptEscaped(body))\" "
+            + "with title \"\(appleScriptEscaped(title))\""
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]

@@ -92,6 +92,10 @@ app is ever signed with a Developer ID.
 Each signed-in provider gets its own mark followed by its percentages. Both always show,
 so a number is never left without a label.
 
+The visible menu-bar values refresh every 30 minutes while the popover is closed and on
+every open. Claude status checks run in the background only when outage notifications
+are enabled; otherwise they run when the popover opens.
+
 The marks are the vendors' real ones, read at launch from the template PNGs inside their
 installed apps (`TrayIconTemplate` in Claude.app, `chatgptTemplate` in ChatGPT.app) and
 tinted to the usage tier, since template art is black plus alpha. Nothing is copied into

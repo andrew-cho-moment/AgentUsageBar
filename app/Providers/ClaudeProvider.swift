@@ -44,6 +44,102 @@ final class ClaudeProvider: UsageProvider, Sendable {
         let oauthAccount: OAuthAccount?
     }
 
+    private enum LimitKind: String, Decodable, Sendable {
+        case session
+        case weeklyAll = "weekly_all"
+        case weeklyScoped = "weekly_scoped"
+    }
+
+    private enum SpendSeverity: String, Decodable, Sendable {
+        case none
+        case normal
+        case warning
+        case limitReached = "limit_reached"
+    }
+
+    private struct UsageResponse: Decodable, Sendable {
+        struct Limit: Decodable, Sendable {
+            struct Scope: Decodable, Sendable {
+                struct Model: Decodable, Sendable {
+                    let displayName: String?
+
+                    private enum CodingKeys: String, CodingKey {
+                        case displayName = "display_name"
+                    }
+                }
+
+                let model: Model?
+            }
+
+            let kind: LimitKind
+            let percent: APINumber?
+            let resetsAt: String?
+            let isActive: APIBool?
+            let scope: Scope?
+
+            private enum CodingKeys: String, CodingKey {
+                case kind, percent, scope
+                case resetsAt = "resets_at"
+                case isActive = "is_active"
+            }
+        }
+
+        struct MoneyAmount: Decodable, Sendable {
+            let amountMinor: APINumber?
+            let currency: String?
+            let exponent: APINumber?
+
+            private enum CodingKeys: String, CodingKey {
+                case currency, exponent
+                case amountMinor = "amount_minor"
+            }
+        }
+
+        struct Spend: Decodable, Sendable {
+            let limit: MoneyAmount?
+            let used: MoneyAmount?
+            let disabledReason: String?
+            let enabled: APIBool?
+            let severity: SpendSeverity?
+
+            private enum CodingKeys: String, CodingKey {
+                case limit, used, enabled, severity
+                case disabledReason = "disabled_reason"
+            }
+        }
+
+        struct ExtraUsage: Decodable, Sendable {
+            let monthlyLimit: APINumber?
+            let monthlyCreditLimit: APINumber?
+            let usedCredits: APINumber?
+            let decimalPlaces: APINumber?
+            let currency: String?
+            let disabledReason: String?
+            let isEnabled: APIBool?
+            let spendLimitReached: APIBool?
+
+            private enum CodingKeys: String, CodingKey {
+                case currency
+                case monthlyLimit = "monthly_limit"
+                case monthlyCreditLimit = "monthly_credit_limit"
+                case usedCredits = "used_credits"
+                case decimalPlaces = "decimal_places"
+                case disabledReason = "disabled_reason"
+                case isEnabled = "is_enabled"
+                case spendLimitReached = "spend_limit_reached"
+            }
+        }
+
+        let limits: [Limit]?
+        let spend: Spend?
+        let extraUsage: ExtraUsage?
+
+        private enum CodingKeys: String, CodingKey {
+            case limits, spend
+            case extraUsage = "extra_usage"
+        }
+    }
+
     private let planLabelCache = PlanLabelCache()
 
     /// The Keychain item holds JSON rather than a bare token. Reading it prompts for
@@ -62,12 +158,14 @@ final class ClaudeProvider: UsageProvider, Sendable {
             throw UsageError.keychain(status: status)
         }
         guard let data = item as? Data,
-              let credentials = try? JSONDecoder().decode(KeychainCredentials.self, from: data) else {
+            let credentials = try? JSONDecoder().decode(KeychainCredentials.self, from: data)
+        else {
             throw UsageError.malformed(field: "keychain payload")
         }
         // Claude Code nests the token; tolerate a flat shape too.
         guard let token = credentials.claudeAiOauth?.accessToken ?? credentials.accessToken,
-              !token.isEmpty else {
+            !token.isEmpty
+        else {
             throw UsageError.notLoggedIn(.claude)
         }
         return token
@@ -78,9 +176,10 @@ final class ClaudeProvider: UsageProvider, Sendable {
     func fetch() async throws -> ProviderSnapshot {
         let token = try Self.accessToken()
 
-        var request = URLRequest(url: Self.usageURL,
-                                 cachePolicy: .reloadIgnoringLocalCacheData,
-                                 timeoutInterval: 15)
+        var request = URLRequest(
+            url: Self.usageURL,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 15)
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -92,18 +191,18 @@ final class ClaudeProvider: UsageProvider, Sendable {
         }
         if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized }
         guard http.statusCode == 200 else { throw UsageError.http(status: http.statusCode) }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let response = try? JSONDecoder().decode(UsageResponse.self, from: data) else {
             throw UsageError.malformed(field: "body")
         }
 
         var unrecognized: [String] = []
-        let windows = Self.decodeWindows(json, unrecognized: &unrecognized)
+        let windows = Self.decodeWindows(response.limits ?? [], unrecognized: &unrecognized)
 
         return ProviderSnapshot(
             provider: .claude,
             planLabel: await planLabelCache.resolve(Self.readPlanLabel),
             windows: windows,
-            budgetReading: Self.decodeBudget(json),
+            budgetReading: Self.decodeBudget(response),
             creditBalanceMinor: nil,
             creditUnit: nil,
             unrecognized: unrecognized,
@@ -117,61 +216,49 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// reset and model scope — so it is preferred over the top-level meter keys, many
     /// of which are unreleased codenames (`nimbus_quill`, `iguana_necktie`) this app
     /// could not label meaningfully.
-    private static func decodeWindows(_ json: [String: Any],
-                                      unrecognized: inout [String]) -> [RateWindow] {
-        guard let entries = JSONNumber.array(json["limits"]) else { return [] }
-
+    private static func decodeWindows(
+        _ entries: [UsageResponse.Limit],
+        unrecognized: inout [String]
+    ) -> [RateWindow] {
         var windows: [RateWindow] = []
         for entry in entries {
-            guard let kindValue = JSONNumber.string(entry["kind"]) else {
-                unrecognized.append("limits[].kind missing")
-                continue
-            }
-            guard let kind = LimitKind(rawValue: kindValue) else {
-                // Surfaced rather than skipped silently, so a new bucket is visible
-                // the day Anthropic ships it.
-                unrecognized.append("limit kind '\(kindValue)'")
-                continue
-            }
-            let percent = JSONNumber.double(entry["percent"]) ?? 0
-            let resetsAt = DateParse.iso(JSONNumber.string(entry["resets_at"]))
-            let isActive = JSONNumber.bool(entry["is_active"]) ?? false
+            let percent = entry.percent?.value ?? 0
+            let resetsAt = DateParse.iso(entry.resetsAt)
+            let isActive = entry.isActive?.value ?? false
 
-            switch kind {
+            switch entry.kind {
             case .session:
-                windows.append(RateWindow(id: WindowID.session,
-                                          label: "Session (5 hour)",
-                                          percent: percent,
-                                          resetsAt: resetsAt,
-                                          isActive: isActive))
+                windows.append(
+                    RateWindow(
+                        id: WindowID.session,
+                        label: "Session (5 hour)",
+                        percent: percent,
+                        resetsAt: resetsAt,
+                        isActive: isActive))
             case .weeklyAll:
-                windows.append(RateWindow(id: WindowID.weekly,
-                                          label: "Weekly (7 day)",
-                                          percent: percent,
-                                          resetsAt: resetsAt,
-                                          isActive: isActive))
+                windows.append(
+                    RateWindow(
+                        id: WindowID.weekly,
+                        label: "Weekly (7 day)",
+                        percent: percent,
+                        resetsAt: resetsAt,
+                        isActive: isActive))
             case .weeklyScoped:
-                let model = JSONNumber.object(entry["scope"])
-                    .flatMap { JSONNumber.object($0["model"]) }
-                    .flatMap { JSONNumber.string($0["display_name"]) }
+                let model = entry.scope?.model?.displayName
                 guard let model else {
                     unrecognized.append("weekly_scoped without model name")
                     continue
                 }
-                windows.append(RateWindow(id: "weekly_\(model.lowercased())",
-                                          label: "Weekly \(model) (7 day)",
-                                          percent: percent,
-                                          resetsAt: resetsAt,
-                                          isActive: isActive))
+                windows.append(
+                    RateWindow(
+                        id: "weekly_\(model.lowercased())",
+                        label: "Weekly \(model) (7 day)",
+                        percent: percent,
+                        resetsAt: resetsAt,
+                        isActive: isActive))
             }
         }
         return windows
-    }
-
-    private enum LimitKind: String {
-        case session
-        case weeklyAll    = "weekly_all"
-        case weeklyScoped = "weekly_scoped"
     }
 
     // MARK: Budget
@@ -180,34 +267,32 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// `{amount_minor, currency, exponent}` triples, over `extra_usage`, which requires
     /// assuming cents. Falls back to `extra_usage` so an account served only the older
     /// shape still gets a budget.
-    private static func decodeBudget(_ json: [String: Any]) -> BudgetReading? {
-        if let reading = decodeSpendBudget(JSONNumber.object(json["spend"])) { return reading }
-        return decodeExtraUsageBudget(JSONNumber.object(json["extra_usage"]))
+    private static func decodeBudget(_ response: UsageResponse) -> BudgetReading? {
+        if let reading = decodeSpendBudget(response.spend) { return reading }
+        return decodeExtraUsageBudget(response.extraUsage)
     }
 
-    private static func decodeSpendBudget(_ spend: [String: Any]?) -> BudgetReading? {
+    private static func decodeSpendBudget(_ spend: UsageResponse.Spend?) -> BudgetReading? {
         guard let spend else { return nil }
-        let limitObject = JSONNumber.object(spend["limit"])
-        let usedObject = JSONNumber.object(spend["used"])
-
-        let limitMinor = limitObject.flatMap { JSONNumber.int($0["amount_minor"]) }
-        let spentMinor = usedObject.flatMap { JSONNumber.int($0["amount_minor"]) }
+        let limitMinor = spend.limit?.amountMinor?.roundedInt
+        let spentMinor = spend.used?.amountMinor?.roundedInt
         guard limitMinor != nil || spentMinor != nil else { return nil }
 
-        let exponent = limitObject.flatMap { JSONNumber.int($0["exponent"]) }
-                    ?? usedObject.flatMap { JSONNumber.int($0["exponent"]) } ?? 2
-        let currency = limitObject.flatMap { JSONNumber.string($0["currency"]) }
-                    ?? usedObject.flatMap { JSONNumber.string($0["currency"]) }
+        let exponent =
+            spend.limit?.exponent?.roundedInt
+            ?? spend.used?.exponent?.roundedInt ?? 2
+        let currency = spend.limit?.currency ?? spend.used?.currency
 
         return BudgetReading(
             spentMinor: spentMinor,
             limitMinor: limitMinor,
             unit: currency.map { .currency(code: $0, exponent: exponent) }
-               ?? .credits(exponent: exponent),
+                ?? .credits(exponent: exponent),
             scope: nil,
-            state: state(disabledReason: JSONNumber.string(spend["disabled_reason"]),
-                         enabled: JSONNumber.bool(spend["enabled"]),
-                         limitReached: JSONNumber.string(spend["severity"]) == "limit_reached"),
+            state: state(
+                disabledReason: spend.disabledReason,
+                enabled: spend.enabled?.value,
+                limitReached: spend.severity == .limitReached),
             resetsAt: nil
         )
     }
@@ -215,30 +300,33 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// `used_credits` is a float here — decoding it as Int is what made upstream report
     /// $0 spent and then hide the whole section behind a `spent > 0` check. The limit
     /// moved from `monthly_credit_limit` to `monthly_limit`, so both are accepted.
-    private static func decodeExtraUsageBudget(_ extra: [String: Any]?) -> BudgetReading? {
+    private static func decodeExtraUsageBudget(_ extra: UsageResponse.ExtraUsage?) -> BudgetReading?
+    {
         guard let extra else { return nil }
 
-        let limitMinor = JSONNumber.int(extra["monthly_limit"])
-                      ?? JSONNumber.int(extra["monthly_credit_limit"])
-        let spentMinor = JSONNumber.int(extra["used_credits"])
+        let limitMinor = extra.monthlyLimit?.roundedInt ?? extra.monthlyCreditLimit?.roundedInt
+        let spentMinor = extra.usedCredits?.roundedInt
         guard limitMinor != nil || spentMinor != nil else { return nil }
 
-        let exponent = JSONNumber.int(extra["decimal_places"]) ?? 2
+        let exponent = extra.decimalPlaces?.roundedInt ?? 2
 
         return BudgetReading(
             spentMinor: spentMinor,
             limitMinor: limitMinor,
-            unit: JSONNumber.string(extra["currency"]).map { .currency(code: $0, exponent: exponent) }
-               ?? .credits(exponent: exponent),
+            unit: extra.currency.map { .currency(code: $0, exponent: exponent) }
+                ?? .credits(exponent: exponent),
             scope: nil,
-            state: state(disabledReason: JSONNumber.string(extra["disabled_reason"]),
-                         enabled: JSONNumber.bool(extra["is_enabled"]),
-                         limitReached: JSONNumber.bool(extra["spend_limit_reached"]) ?? false),
+            state: state(
+                disabledReason: extra.disabledReason,
+                enabled: extra.isEnabled?.value,
+                limitReached: extra.spendLimitReached?.value ?? false),
             resetsAt: nil
         )
     }
 
-    private static func state(disabledReason: String?, enabled: Bool?, limitReached: Bool) -> BudgetState {
+    private static func state(disabledReason: String?, enabled: Bool?, limitReached: Bool)
+        -> BudgetState
+    {
         if let disabledReason, !disabledReason.isEmpty {
             return .disabled(reason: disabledReason)
         }
@@ -261,17 +349,17 @@ final class ClaudeProvider: UsageProvider, Sendable {
         guard size > 0, size < 20_000_000 else { return nil }
 
         guard let data = try? Data(contentsOf: url),
-              let account = try? JSONDecoder().decode(ClaudeConfig.self, from: data).oauthAccount
+            let account = try? JSONDecoder().decode(ClaudeConfig.self, from: data).oauthAccount
         else { return nil }
 
         let org = account.organizationName
         let tier = account.seatTier.map(prettifyTier)
 
         switch (org, tier) {
-        case let (org?, tier?): return "\(org) · \(tier)"
-        case let (org?, nil):   return org
-        case let (nil, tier?):  return tier
-        default:                return nil
+        case (let org?, let tier?): return "\(org) · \(tier)"
+        case (let org?, nil): return org
+        case (nil, let tier?): return tier
+        default: return nil
         }
     }
 

@@ -1,18 +1,16 @@
-import SwiftUI
+import AppKit
 import ServiceManagement
 
 // MARK: - Settings
 
-enum AppearanceMode: String, CaseIterable, Identifiable {
+enum AppearanceMode: String, CaseIterable {
     case system, dark, light
-
-    var id: String { rawValue }
 
     var label: String {
         switch self {
         case .system: return "System"
-        case .dark:   return "Dark"
-        case .light:  return "Light"
+        case .dark: return "Dark"
+        case .light: return "Light"
         }
     }
 
@@ -21,20 +19,20 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
     /// differently, which used to make System and Dark look unlike each other.
     func resolved(systemIsDark: Bool) -> NSAppearance? {
         switch self {
-        case .dark:   return NSAppearance(named: .darkAqua)
-        case .light:  return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        case .light: return NSAppearance(named: .aqua)
         case .system: return NSAppearance(named: systemIsDark ? .darkAqua : .aqua)
         }
     }
 }
 
 @MainActor
-final class Settings: ObservableObject {
+final class Settings {
     private enum Key {
         static let statusNotifications = "status_notifications_enabled"
-        static let shortcutEnabled     = "shortcut_enabled"
-        static let appearanceMode      = "appearance_mode"
-        static let trackedComponents   = "tracked_component_ids"
+        static let shortcutEnabled = "shortcut_enabled"
+        static let appearanceMode = "appearance_mode"
+        static let trackedComponents = "tracked_component_ids"
         static func budgetOverride(_ provider: Provider) -> String {
             "budget_override_minor_\(provider.rawValue)"
         }
@@ -45,34 +43,41 @@ final class Settings: ObservableObject {
     var onShortcutChange: ((Bool) -> Void)?
     var onNotificationChange: ((Bool) -> Void)?
     var onBudgetChange: (() -> Void)?
+    var onViewChange: (() -> Void)?
 
-    @Published var statusNotificationsEnabled: Bool {
+    var statusNotificationsEnabled: Bool {
         didSet {
             defaults.set(statusNotificationsEnabled, forKey: Key.statusNotifications)
             onNotificationChange?(statusNotificationsEnabled)
+            onViewChange?()
         }
     }
 
-    @Published var shortcutEnabled: Bool {
+    var shortcutEnabled: Bool {
         didSet {
             defaults.set(shortcutEnabled, forKey: Key.shortcutEnabled)
             onShortcutChange?(shortcutEnabled)
+            onViewChange?()
         }
     }
 
-    @Published var appearanceMode: AppearanceMode {
+    var appearanceMode: AppearanceMode {
         didSet {
             defaults.set(appearanceMode.rawValue, forKey: Key.appearanceMode)
             onAppearanceChange?()
+            onViewChange?()
         }
     }
 
-    @Published var trackedComponentIDs: Set<String> {
-        didSet { defaults.set(Array(trackedComponentIDs), forKey: Key.trackedComponents) }
+    var trackedComponentIDs: Set<String> {
+        didSet {
+            defaults.set(Array(trackedComponentIDs), forKey: Key.trackedComponents)
+            onViewChange?()
+        }
     }
 
     /// Fills in a monthly limit the provider does not report. Never a spend figure.
-    @Published var budgetOverrideMinor: [Provider: Int] {
+    var budgetOverrideMinor: [Provider: Int] {
         didSet {
             for provider in Provider.allCases {
                 let key = Key.budgetOverride(provider)
@@ -83,6 +88,7 @@ final class Settings: ObservableObject {
                 }
             }
             onBudgetChange?()
+            onViewChange?()
         }
     }
 
@@ -94,15 +100,18 @@ final class Settings: ObservableObject {
         // Absent keys default to on for notifications and the shortcut; a stored
         // `false` must survive, so presence is checked rather than relying on
         // UserDefaults' bool-returns-false-when-missing behavior.
-        statusNotificationsEnabled = defaults.object(forKey: Key.statusNotifications) as? Bool ?? true
+        statusNotificationsEnabled =
+            defaults.object(forKey: Key.statusNotifications) as? Bool ?? true
         shortcutEnabled = defaults.object(forKey: Key.shortcutEnabled) as? Bool ?? true
-        appearanceMode = AppearanceMode(rawValue: defaults.string(forKey: Key.appearanceMode) ?? "")
+        appearanceMode =
+            AppearanceMode(rawValue: defaults.string(forKey: Key.appearanceMode) ?? "")
             ?? .system
         trackedComponentIDs = Set(defaults.array(forKey: Key.trackedComponents) as? [String] ?? [])
 
         var overrides: [Provider: Int] = [:]
         for provider in Provider.allCases {
-            if let value = defaults.object(forKey: Key.budgetOverride(provider)) as? Int, value > 0 {
+            if let value = defaults.object(forKey: Key.budgetOverride(provider)) as? Int, value > 0
+            {
                 overrides[provider] = value
             }
         }
@@ -132,14 +141,14 @@ final class Settings: ObservableObject {
         } catch {
             debugLog("Login item change failed: \(error.localizedDescription)")
         }
-        objectWillChange.send()
+        onViewChange?()
     }
 }
 
 // MARK: - Store
 
 @MainActor
-final class AppStore: ObservableObject {
+final class AppStore {
     private(set) var snapshots: [Provider: ProviderSnapshot] = [:]
     private(set) var failures: [Provider: String] = [:]
     private(set) var signedIn: Set<Provider> = []
@@ -148,22 +157,11 @@ final class AppStore: ObservableObject {
 
     /// Set when the system refuses to register ⌘U, which in practice means another app
     /// already owns it. Reporting the real failure beats guessing at a cause.
-    @Published var shortcutConflict = false
-    var onMenuBarChange: (() -> Void)?
-
-    /// Bumped each time the popover opens. The hosting view outlives any single
-    /// showing, so without this the scroll position persists between openings and the
-    /// popover can appear already scrolled past the first provider.
-    private(set) var openToken = UUID()
-
-    /// Height the popover may occupy on the screen it is about to open on.
-    private(set) var availablePopoverHeight: CGFloat = 600
-
-    func notePopoverOpened(availableHeight: CGFloat) {
-        publishViewChange()
-        availablePopoverHeight = availableHeight
-        openToken = UUID()
+    var shortcutConflict = false {
+        didSet { onViewChange?() }
     }
+    var onMenuBarChange: (() -> Void)?
+    var onViewChange: (() -> Void)?
 
     let settings: Settings
 
@@ -171,18 +169,9 @@ final class AppStore: ObservableObject {
         .claude: ClaudeProvider(),
         .codex: CodexProvider(),
     ]
-    private var isViewActive = false
 
     init(settings: Settings) {
         self.settings = settings
-    }
-
-    func setViewActive(_ active: Bool) {
-        isViewActive = active
-    }
-
-    private func publishViewChange() {
-        if isViewActive { objectWillChange.send() }
     }
 
     /// Ordered for display: Claude first, then Codex, skipping providers not signed in.
@@ -193,13 +182,14 @@ final class AppStore: ObservableObject {
     func snapshot(for provider: Provider) -> ProviderSnapshot? { snapshots[provider] }
 
     func budget(for provider: Provider) -> Budget? {
-        snapshots[provider]?.resolvedBudget(overrideLimitMinor: settings.budgetOverrideMinor[provider])
+        snapshots[provider]?.resolvedBudget(
+            overrideLimitMinor: settings.budgetOverrideMinor[provider])
     }
 
     func refresh() async {
         guard !isRefreshing else { return }
-        publishViewChange()
         isRefreshing = true
+        onViewChange?()
 
         let results = await withTaskGroup(
             of: (Provider, Result<ProviderSnapshot, Error>).self,
@@ -210,8 +200,9 @@ final class AppStore: ObservableObject {
             for provider in Provider.allCases {
                 guard let source = providers[provider] else { continue }
                 group.addTask {
-                    do { return (provider, .success(try await source.fetch())) }
-                    catch { return (provider, .failure(error)) }
+                    do { return (provider, .success(try await source.fetch())) } catch {
+                        return (provider, .failure(error))
+                    }
                 }
             }
             var collected: [(Provider, Result<ProviderSnapshot, Error>)] = []
@@ -222,7 +213,6 @@ final class AppStore: ObservableObject {
             return collected
         }
 
-        publishViewChange()
         for (provider, result) in results {
             switch result {
             case .success(let snapshot):
@@ -238,7 +228,8 @@ final class AppStore: ObservableObject {
                     continue
                 }
                 guard signedIn.contains(provider) else { continue }
-                let message = (error as? UsageError)?.errorDescription
+                let message =
+                    (error as? UsageError)?.errorDescription
                     ?? error.localizedDescription
                 failures[provider] = message
                 debugLog("\(provider.displayName) fetch failed: \(message)")
@@ -247,5 +238,6 @@ final class AppStore: ObservableObject {
         lastUpdated = Date()
         isRefreshing = false
         onMenuBarChange?()
+        onViewChange?()
     }
 }

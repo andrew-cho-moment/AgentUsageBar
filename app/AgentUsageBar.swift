@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 import Carbon
 
@@ -20,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     private var statusManager: StatusManager!
     private var menuBar: MenuBarController!
     private var popover: NSPopover?
-    private var hosting: NSHostingController<UsageView>?
+    private var usageController: UsageViewController?
 
     /// The Carbon handler is installed once for the process lifetime. Upstream
     /// reinstalled it on every enable, so toggling the shortcut off and on left two
@@ -33,7 +32,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// button action, so without this the click that should close it reopens it.
     private var lastPopoverClose: Date?
 
-    private static let pollInterval: TimeInterval = 300
+    private static let pollInterval: TimeInterval = 1_800
+
+    private enum RefreshContext {
+        case background
+        case foreground
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         settings = Settings()
@@ -68,24 +72,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: Polling
 
     private func startPolling() {
-        refreshAll()
-        let timer = Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshAll() }
+        refresh(.background)
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.pollInterval, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh(.background) }
         }
-        // A usage percentage does not need second-accurate scheduling, and the slack lets
-        // the OS wake this timer alongside others instead of on its own.
-        timer.tolerance = 30
+        // The status item stays visible while the popover is closed, but half-hour
+        // freshness is enough until the user opens it. Wide tolerance lets macOS fold
+        // this work into an existing wakeup.
+        timer.tolerance = 300
         pollTimer = timer
     }
 
-    private func refreshAll() {
+    private func refresh(_ context: RefreshContext) {
+        let refreshStatus = context == .foreground || settings.statusNotificationsEnabled
         Task { [weak self] in
             guard let self else { return }
             // Independent endpoints; serialising them only lengthened the window in
             // which the menu bar shows stale numbers.
-            async let status: Void = self.statusManager.fetch()
-            await self.store.refresh()
-            await status
+            async let usage: Void = self.store.refresh()
+            if refreshStatus { await self.statusManager.fetch() }
+            await usage
         }
     }
 
@@ -119,7 +126,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             if enabled { self.registerHotKey() } else { self.unregisterHotKey() }
         }
         settings.onNotificationChange = { enabled in
-            if enabled { Notifier.prepare() }
+            guard enabled else { return }
+            Notifier.prepare()
+            Task { [weak self] in await self?.statusManager.fetch() }
         }
         settings.onBudgetChange = { [weak self] in self?.menuBar.setNeedsRender() }
         store.onMenuBarChange = { [weak self] in self?.menuBar.setNeedsRender() }
@@ -141,60 +150,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     private func showPopover() {
         guard let button = menuBarButton else { return }
-        let popover = makePopover()
-        store.notePopoverOpened(availableHeight: Self.availableHeight(for: button))
-        sizePopoverToContent()
+        let popover = makePopover(availableHeight: Self.availableHeight(for: button))
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
 
         if debugLoggingEnabled {
-            // The frame is only final after SwiftUI has measured and resized it.
+            // The frame is only final after AppKit has measured and resized it.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 MainActor.assumeIsolated { self?.logPopoverGeometry() }
             }
         }
 
-        // Opening is the moment the numbers matter most; refresh if they are stale.
-        if let lastUpdated = store.lastUpdated,
-           Date().timeIntervalSince(lastUpdated) > Self.pollInterval {
-            refreshAll()
-        }
+        // Opening is the only moment fresh detail is immediately useful. The refresh
+        // coalesces with an in-flight launch or timer refresh.
+        refresh(.foreground)
     }
 
-    /// SwiftUI's hosting graph is useful only while the popover is visible. Creating it
-    /// on demand removes its hidden-view invalidations from every background refresh and
-    /// returns the graph to the allocator as soon as the popover closes.
-    private func makePopover() -> NSPopover {
+    /// The AppKit controller exists only while visible. Closed-state refreshes update
+    /// plain model values and the status item without retaining any popover view tree.
+    private func makePopover(availableHeight: CGFloat) -> NSPopover {
         if let popover { return popover }
 
-        store.setViewActive(true)
-        statusManager.setViewActive(true)
-        let hosting = NSHostingController(rootView: UsageView(
+        let controller = UsageViewController(
             store: store,
             statusManager: statusManager,
-            settings: settings
-        ))
+            settings: settings,
+            maximumHeight: availableHeight,
+            onRefresh: { [weak self] in self?.refresh(.foreground) }
+        )
         let popover = NSPopover()
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentViewController = hosting
-        popover.appearance = settings.appearanceMode.resolved(systemIsDark:
-            UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
-        self.hosting = hosting
+        popover.contentViewController = controller
+        popover.appearance = settings.appearanceMode.resolved(
+            systemIsDark:
+                UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark")
+        controller.onContentSizeChange = { [weak popover] size in
+            popover?.contentSize = size
+        }
+        store.onViewChange = { [weak controller] in controller?.reload() }
+        statusManager.onViewChange = { [weak controller] in controller?.reload() }
+        settings.onViewChange = { [weak controller] in controller?.reload() }
+        controller.prepare()
+        self.usageController = controller
         self.popover = popover
         return popover
-    }
-
-    /// NSPopover reads `contentSize` to choose where on screen it sits. SwiftUI measures
-    /// its content only once the view lays out, so showing first and measuring second
-    /// left AppKit growing the window upward from an origin fixed for the old, smaller
-    /// size — pushing the top off the screen. Settling the size first means the position
-    /// is computed from the height the popover will actually have.
-    private func sizePopoverToContent() {
-        guard let hosting, let popover else { return }
-        hosting.view.layoutSubtreeIfNeeded()
-        popover.contentSize = hosting.sizeThatFits(
-            in: CGSize(width: UsageView.width, height: CGFloat.greatestFiniteMagnitude)
-        )
     }
 
     /// Room below the menu bar on the screen the status item lives on, so the popover is
@@ -215,10 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             return
         }
         let barBottom = screen.visibleFrame.maxY
-        debugLog("popover frame=\(frame) content=\(popover.contentSize) "
-               + "menuBarBottom=\(barBottom) screen=\(screen.frame) "
-               + "overTop=\(Int(frame.maxY - barBottom)) "
-               + "underBottom=\(Int(screen.frame.minY - frame.minY))")
+        debugLog(
+            "popover frame=\(frame) content=\(popover.contentSize) "
+                + "menuBarBottom=\(barBottom) screen=\(screen.frame) "
+                + "overTop=\(Int(frame.maxY - barBottom)) "
+                + "underBottom=\(Int(screen.frame.minY - frame.minY))")
     }
 
     private var menuBarButton: NSStatusBarButton? {
@@ -228,15 +228,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         lastPopoverClose = Date()
         // Releasing AppKit objects from inside their close callback is unsafe. The next
-        // run-loop turn is past that callback and frees the otherwise-idle SwiftUI tree.
+        // run-loop turn is past that callback and frees the otherwise-idle view tree.
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.popover?.isShown != true else { return }
+                self.store.onViewChange = nil
+                self.statusManager.onViewChange = nil
+                self.settings.onViewChange = nil
                 self.popover?.contentViewController = nil
-                self.hosting = nil
+                self.usageController = nil
                 self.popover = nil
-                self.store.setViewActive(false)
-                self.statusManager.setViewActive(false)
             }
         }
     }
@@ -246,8 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// Carbon hot keys need no Accessibility permission — that is only required for
     /// CGEventTap and NSEvent global monitors — so none is requested.
     private func installHotKeyHandler() {
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                 eventKind: OSType(kEventHotKeyPressed))
+        var spec = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: OSType(kEventHotKeyPressed))
         let callback: EventHandlerUPP = { _, _, userData in
             guard let userData else { return noErr }
             let delegate = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
@@ -256,15 +258,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             }
             return noErr
         }
-        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &spec,
-                            Unmanaged.passUnretained(self).toOpaque(), &hotKeyHandler)
+        InstallEventHandler(
+            GetApplicationEventTarget(), callback, 1, &spec,
+            Unmanaged.passUnretained(self).toOpaque(), &hotKeyHandler)
     }
 
     private func registerHotKey() {
         guard hotKeyRef == nil else { return }
-        let hotKeyID = EventHotKeyID(signature: OSType(0x41475542), id: 1)  // 'AGUB'
-        let status = RegisterEventHotKey(UInt32(kVK_ANSI_U), UInt32(cmdKey), hotKeyID,
-                                        GetApplicationEventTarget(), 0, &hotKeyRef)
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4147_5542), id: 1)  // 'AGUB'
+        let status = RegisterEventHotKey(
+            UInt32(kVK_ANSI_U), UInt32(cmdKey), hotKeyID,
+            GetApplicationEventTarget(), 0, &hotKeyRef)
         // Report the real outcome rather than guessing at a permissions cause.
         let hasConflict = status != noErr
         if store.shortcutConflict != hasConflict {

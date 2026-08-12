@@ -1,613 +1,805 @@
-import SwiftUI
+import AppKit
 
-private struct ContentHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-struct UsageView: View {
-    @ObservedObject var store: AppStore
-    @ObservedObject var statusManager: StatusManager
-    @ObservedObject var settings: Settings
-
-    @State private var showingSettings = false
-    @State private var showingStatusDetails = false
-    @State private var measuredHeight: CGFloat = 260
-    @Environment(\.colorScheme) private var colorScheme
-
+@MainActor
+final class UsageViewController: NSViewController {
     static let width: CGFloat = 360
-    /// Preferred ceiling; the screen the popover opens on can lower it further.
-    private let maxHeight: CGFloat = 600
 
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                content
-                    .padding()
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(key: ContentHeightKey.self, value: geo.size.height)
-                        }
-                    )
-            }
-            .frame(width: Self.width,
-                   height: min(max(measuredHeight, 120),
-                               min(maxHeight, store.availablePopoverHeight)))
-            // Dark: a light scrim over the native material. Light: near-opaque, or a
-            // dark desktop bleeds through as murky blue-gray.
-            .background(
-                colorScheme == .dark
-                    ? Color(red: 0.07, green: 0.07, blue: 0.08).opacity(0.3)
-                    : Color.white.opacity(0.85)
-            )
-            .onPreferenceChange(ContentHeightKey.self) { value in
-                guard value > 0 else { return }
-                measuredHeight = value
-                debugLog("popover content measured at \(Int(value))pt")
-            }
-            .onChange(of: showingSettings) { _, isOpen in
-                guard isOpen else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    withAnimation(.easeInOut(duration: 0.35)) {
-                        proxy.scrollTo("settings-anchor", anchor: .bottom)
-                    }
-                }
-            }
-            .onChange(of: store.openToken) { _, _ in
-                // Every opening starts at the top, and with Settings collapsed.
-                showingSettings = false
-                proxy.scrollTo("top-anchor", anchor: .top)
-            }
+    var onContentSizeChange: ((NSSize) -> Void)?
+
+    private let store: AppStore
+    private let statusManager: StatusManager
+    private let settings: Settings
+    private let maximumHeight: CGFloat
+    private let onRefresh: () -> Void
+
+    private let scrollView = NSScrollView()
+    private let documentView = FlippedView()
+    private let contentStack = VerticalStackView(spacing: 16)
+    private var showingSettings = false
+    private var showingStatusDetails = false
+    private var reloadScheduled = false
+
+    init(
+        store: AppStore,
+        statusManager: StatusManager,
+        settings: Settings,
+        maximumHeight: CGFloat,
+        onRefresh: @escaping () -> Void
+    ) {
+        self.store = store
+        self.statusManager = statusManager
+        self.settings = settings
+        self.maximumHeight = min(600, maximumHeight)
+        self.onRefresh = onRefresh
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func loadView() {
+        view = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 260))
+
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.documentView = documentView
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        documentView.translatesAutoresizingMaskIntoConstraints = false
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+        documentView.addSubview(contentStack)
+
+        view.addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            contentStack.leadingAnchor.constraint(
+                equalTo: documentView.leadingAnchor, constant: 16),
+            contentStack.trailingAnchor.constraint(
+                equalTo: documentView.trailingAnchor, constant: -16),
+            contentStack.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 16),
+            contentStack.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -16),
+        ])
+    }
+
+    func reload() {
+        guard !reloadScheduled else { return }
+        reloadScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.reloadScheduled = false
+            self.rebuildContent()
         }
     }
 
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Agent Usage")
-                .font(.headline)
-                .padding(.bottom, 4)
-                .id("top-anchor")
-
-            if store.visibleProviders.isEmpty {
-                signInPrompt
-            } else {
-                ForEach(store.visibleProviders) { provider in
-                    providerSection(provider)
-                }
-            }
-
-            if statusManager.hasFetched {
-                Divider()
-                statusSection
-            }
-
-            Divider()
-            footer
-
-            settingsToggle
-        }
+    func prepare() {
+        loadViewIfNeeded()
+        rebuildContent()
     }
 
-    // MARK: Sign-in prompt
+    private func rebuildContent() {
+        for view in contentStack.arrangedSubviews {
+            contentStack.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
 
-    private var signInPrompt: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("👋 No providers signed in")
-                .font(.subheadline)
-            ForEach(Provider.allCases) { provider in
-                Text(provider.signInHint)
-                    .font(.caption)
-                    .foregroundColor(Color.secondaryText)
+        contentStack.addArrangedSubview(label("Agent Usage", style: .headline))
+
+        if store.visibleProviders.isEmpty {
+            contentStack.addArrangedSubview(signInPrompt())
+        } else {
+            for provider in store.visibleProviders {
+                contentStack.addArrangedSubview(providerSection(provider))
             }
         }
-        .padding(.vertical, 8)
+
+        if statusManager.hasFetched {
+            contentStack.addArrangedSubview(separator())
+            contentStack.addArrangedSubview(statusSection())
+        }
+
+        contentStack.addArrangedSubview(separator())
+        contentStack.addArrangedSubview(footer())
+        contentStack.addArrangedSubview(settingsSection())
+
+        view.layoutSubtreeIfNeeded()
+        let contentHeight = contentStack.fittingSize.height + 32
+        let height = min(max(contentHeight, 120), maximumHeight)
+        view.frame.size = NSSize(width: Self.width, height: height)
+        onContentSizeChange?(view.frame.size)
     }
 
-    // MARK: Provider
+    private func signInPrompt() -> NSView {
+        let stack = verticalStack(spacing: 6)
+        stack.addArrangedSubview(label("👋 No providers signed in", style: .subheadline))
+        for provider in Provider.allCases {
+            stack.addArrangedSubview(
+                label(provider.signInHint, style: .caption, color: .secondaryLabelColor))
+        }
+        return stack
+    }
 
-    @ViewBuilder
-    private func providerSection(_ provider: Provider) -> some View {
+    private func providerSection(_ provider: Provider) -> NSView {
+        let stack = verticalStack(spacing: 10)
         let snapshot = store.snapshot(for: provider)
+        let title =
+            snapshot?.planLabel.map { "\(provider.displayName) · \($0)" }
+            ?? provider.displayName
+        stack.addArrangedSubview(label(title, style: .subheadline, weight: .semibold))
 
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Text(provider.displayName)
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                if let plan = snapshot?.planLabel {
-                    Text("· \(plan)")
-                        .font(.caption)
-                        .foregroundColor(Color.secondaryText)
-                }
-                Spacer()
-            }
-
-            if let failure = store.failures[provider] {
-                Text(failure)
-                    .font(.caption)
-                    .foregroundColor(.orange)
-            }
-
-            if let snapshot {
-                ForEach(displayWindows(snapshot)) { window in
-                    windowRow(window)
-                }
-
-                if let budget = store.budget(for: provider) {
-                    budgetRow(provider: provider, budget: budget)
-                } else if let balance = snapshot.creditBalanceMinor,
-                          let unit = snapshot.creditUnit {
-                    Text("\(Fmt.amount(balance, unit: unit)) available")
-                        .font(.caption)
-                        .foregroundColor(Color.secondaryText)
-                } else if snapshot.budgetReading != nil {
-                    // Spend is reported but no cap exists to measure it against.
-                    noBudgetHint(provider)
-                }
-
-                if !snapshot.unrecognized.isEmpty {
-                    Label(
-                        "Unrecognized from API: \(snapshot.unrecognized.joined(separator: ", "))",
-                        systemImage: "exclamationmark.triangle"
-                    )
-                    .font(.caption2)
-                    .foregroundColor(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-            } else if store.failures[provider] == nil {
-                Text("Loading…")
-                    .font(.caption)
-                    .foregroundColor(Color.secondaryText)
-            }
+        if let failure = store.failures[provider] {
+            stack.addArrangedSubview(label(failure, style: .caption, color: .systemOrange))
         }
-    }
 
-    /// Model-scoped caps sitting at zero are noise; the account-wide meters always show.
-    private func displayWindows(_ snapshot: ProviderSnapshot) -> [RateWindow] {
-        snapshot.windows.filter { $0.isHeadline || $0.percent >= 1 }
-    }
-
-    private func windowRow(_ window: RateWindow) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(window.label)
-                    .font(.subheadline)
-                Spacer()
-                if let resetsAt = window.resetsAt {
-                    Text("Resets \(Fmt.resetPhrase(resetsAt, includeDate: !window.isSessionLength))")
-                        .font(.caption)
-                        .foregroundColor(Color.secondaryText)
-                }
+        if let snapshot {
+            for window in snapshot.windows where window.isHeadline || window.percent >= 1 {
+                stack.addArrangedSubview(windowRow(window))
             }
 
-            UsageBar(fraction: window.percent / 100,
-                     color: UsageTier(percent: window.percent).color)
+            if let budget = store.budget(for: provider) {
+                stack.addArrangedSubview(budgetRow(provider: provider, budget: budget))
+            } else if let balance = snapshot.creditBalanceMinor,
+                let unit = snapshot.creditUnit
+            {
+                stack.addArrangedSubview(
+                    label(
+                        "\(Fmt.amount(balance, unit: unit)) available",
+                        style: .caption, color: .secondaryLabelColor))
+            } else if snapshot.budgetReading != nil {
+                stack.addArrangedSubview(
+                    label(
+                        "No monthly limit reported. Set one in Settings to see percent used.",
+                        style: .caption2,
+                        color: .secondaryLabelColor
+                    ))
+            }
 
-            Text("\(Int(window.percent.rounded()))% used")
-                .font(.caption)
-                .foregroundColor(Color.secondaryText)
+            if !snapshot.unrecognized.isEmpty {
+                stack.addArrangedSubview(
+                    label(
+                        "⚠ Unrecognized from API: \(snapshot.unrecognized.joined(separator: ", "))",
+                        style: .caption2,
+                        color: .systemOrange
+                    ))
+            }
+        } else if store.failures[provider] == nil {
+            stack.addArrangedSubview(
+                label("Loading…", style: .caption, color: .secondaryLabelColor))
         }
+        return stack
     }
 
-    // MARK: Budget
-
-    private func budgetRow(provider: Provider, budget: Budget) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(budgetTitle(budget))
-                    .font(.subheadline)
-                Spacer()
-                Button("Manage →") { NSWorkspace.shared.open(provider.manageURL) }
-                    .buttonStyle(.borderless)
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(.accentColor)
-            }
-
-            UsageBar(fraction: min(budget.fraction, 1.0),
-                     color: UsageTier(percent: Double(budget.percent)).color)
-
-            HStack(alignment: .top) {
-                Text(budgetDetail(budget))
-                    .font(.caption)
-                    .foregroundColor(Color.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                if let resetsAt = budget.resetsAt {
-                    Text(Fmt.shortReset(resetsAt))
-                        .font(.caption)
-                        .foregroundColor(Color.secondaryText)
-                }
-            }
-
-            if let badge = budgetBadge(budget) {
-                Label(badge, systemImage: "exclamationmark.circle")
-                    .font(.caption2)
-                    .foregroundColor(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if budget.isUserOverride {
-                Text("Limit set by you in Settings, not reported by \(provider.displayName).")
-                    .font(.caption2)
-                    .foregroundColor(Color.secondaryText)
-                    .opacity(0.8)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+    private func windowRow(_ window: RateWindow) -> NSView {
+        let stack = verticalStack(spacing: 4)
+        let title = label(window.label, style: .subheadline)
+        let reset = window.resetsAt.map {
+            label(
+                "Resets \(Fmt.resetPhrase($0, includeDate: !window.isSessionLength))",
+                style: .caption, color: .secondaryLabelColor)
         }
+        stack.addArrangedSubview(row(title, trailing: reset))
+        stack.addArrangedSubview(progressBar(percent: window.percent))
+        stack.addArrangedSubview(
+            label(
+                "\(Int(window.percent.rounded()))% used",
+                style: .caption, color: .secondaryLabelColor))
+        return stack
     }
 
-    /// An organization-wide cap counts everyone's spend, so it must not be labelled as
-    /// the user's own.
-    private func budgetTitle(_ budget: Budget) -> String {
+    private func budgetRow(provider: Provider, budget: Budget) -> NSView {
+        let stack = verticalStack(spacing: 4)
+        let title: String
         switch budget.unit {
         case .credits:
-            return "Monthly credit limit"
+            title = "Monthly credit limit"
         case .currency:
-            return budget.isOrganizationWide ? "Monthly budget (whole org)" : "Monthly budget"
+            title = budget.isOrganizationWide ? "Monthly budget (whole org)" : "Monthly budget"
         }
-    }
+        let manage = ActionButton(title: "Manage →") {
+            NSWorkspace.shared.open(provider.manageURL)
+        }
+        manage.bezelStyle = .inline
+        manage.controlSize = .small
+        stack.addArrangedSubview(row(label(title, style: .subheadline), trailing: manage))
+        stack.addArrangedSubview(progressBar(percent: Double(budget.percent)))
 
-    private func budgetDetail(_ budget: Budget) -> String {
         let spent = Fmt.amount(budget.spentMinor, unit: budget.unit)
         let limit = Fmt.amount(budget.limitMinor, unit: budget.unit)
+        let detail: String
         if budget.isOver {
-            let over = Fmt.amount(budget.overageMinor, unit: budget.unit)
-            return "\(spent) of \(limit) · over by \(over)"
+            detail =
+                "\(spent) of \(limit) · over by \(Fmt.amount(budget.overageMinor, unit: budget.unit))"
+        } else {
+            detail =
+                "\(spent) of \(limit) · \(Fmt.amount(budget.remainingMinor, unit: budget.unit)) left · \(budget.percent)%"
         }
-        let left = Fmt.amount(budget.remainingMinor, unit: budget.unit)
-        return "\(spent) of \(limit) · \(left) left · \(budget.percent)%"
-    }
+        let reset = budget.resetsAt.map {
+            label(Fmt.shortReset($0), style: .caption, color: .secondaryLabelColor)
+        }
+        stack.addArrangedSubview(
+            row(
+                label(detail, style: .caption, color: .secondaryLabelColor),
+                trailing: reset))
 
-    private func budgetBadge(_ budget: Budget) -> String? {
+        let badge: String?
         switch budget.state {
-        case .active:
-            return nil
-        case .limitReached:
-            return "Monthly spend limit reached"
-        case .outOfCredits:
-            // Distinct from hitting the cap: the pool is dry with headroom to spare.
-            return "Prepaid credits exhausted"
-        case .disabled(let reason):
-            return reason
+        case .active: badge = nil
+        case .limitReached: badge = "⚠ Monthly spend limit reached"
+        case .outOfCredits: badge = "⚠ Prepaid credits exhausted"
+        case .disabled(let reason): badge = "⚠ \(reason)"
         }
+        if let badge {
+            stack.addArrangedSubview(label(badge, style: .caption2, color: .systemOrange))
+        }
+        if budget.isUserOverride {
+            stack.addArrangedSubview(
+                label(
+                    "Limit set by you in Settings, not reported by \(provider.displayName).",
+                    style: .caption2,
+                    color: .secondaryLabelColor
+                ))
+        }
+        return stack
     }
 
-    private func noBudgetHint(_ provider: Provider) -> some View {
-        Text("No monthly limit reported. Set one in Settings to see percent used.")
-            .font(.caption2)
-            .foregroundColor(Color.secondaryText)
-            .opacity(0.8)
-            .fixedSize(horizontal: false, vertical: true)
+    private func statusSection() -> NSView {
+        let stack = verticalStack(spacing: 8)
+        let dot = StatusDot(color: statusManager.indicator.nsColor)
+        dot.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            dot.widthAnchor.constraint(equalToConstant: 8),
+            dot.heightAnchor.constraint(equalToConstant: 8),
+        ])
+
+        let summary = verticalStack(spacing: 2)
+        summary.addArrangedSubview(
+            label(
+                statusManager.indicator == .none
+                    ? "All Claude services operational"
+                    : statusManager.description,
+                style: .caption,
+                color: .secondaryLabelColor
+            ))
+        summary.addArrangedSubview(
+            label(
+                statusManager.contextLine,
+                style: .caption2, color: .secondaryLabelColor))
+
+        var detailButton: NSView?
+        if statusManager.hasIssue {
+            let button = ActionButton(title: showingStatusDetails ? "Hide ▴" : "Details ▾") {
+                [weak self] in
+                guard let self else { return }
+                self.showingStatusDetails.toggle()
+                self.reload()
+            }
+            button.bezelStyle = .inline
+            button.controlSize = .mini
+            detailButton = button
+        }
+        stack.addArrangedSubview(row(dot, summary, trailing: detailButton))
+
+        if statusManager.hasIssue && showingStatusDetails {
+            stack.addArrangedSubview(statusDetails())
+        }
+        return stack
     }
 
-    // MARK: Status
-
-    private var statusSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 6) {
-                Circle()
-                    .fill(statusManager.indicator.color)
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 4)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(statusManager.indicator == .none
-                         ? "All Claude services operational"
-                         : statusManager.description)
-                        .font(.caption)
-                        .foregroundColor(Color.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text(statusManager.contextLine)
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer()
-                if statusManager.hasIssue {
-                    Button(action: { showingStatusDetails.toggle() }) {
-                        HStack(spacing: 2) {
-                            Text(showingStatusDetails ? "Hide" : "Details")
-                            Image(systemName: showingStatusDetails ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 8))
-                        }
-                        .font(.caption2)
-                    }
-                    .buttonStyle(.borderless)
-                }
+    private func statusDetails() -> NSView {
+        let stack = verticalStack(spacing: 12)
+        for incident in statusManager.filteredIncidents {
+            let incidentStack = verticalStack(spacing: 5)
+            incidentStack.addArrangedSubview(
+                label(incident.name, style: .caption, weight: .semibold))
+            let status = label(
+                incident.status.rawValue.uppercased(),
+                style: .caption2, color: incident.status.nsColor)
+            let updated = incident.updatedAt.map {
+                label("Updated \(Fmt.relative($0))", style: .caption2, color: .secondaryLabelColor)
             }
+            incidentStack.addArrangedSubview(row(status, trailing: updated))
+            if !incident.latestUpdate.isEmpty {
+                incidentStack.addArrangedSubview(label(incident.latestUpdate, style: .caption))
+            }
+            stack.addArrangedSubview(incidentStack)
+        }
 
-            if statusManager.hasIssue && showingStatusDetails {
-                statusDetails
+        if statusManager.filteredIncidents.isEmpty && !statusManager.affectedComponents.isEmpty {
+            stack.addArrangedSubview(
+                label("Affected services", style: .caption2, weight: .semibold))
+            for component in statusManager.affectedComponents {
+                stack.addArrangedSubview(
+                    row(
+                        label("• \(component.name)", style: .caption2),
+                        trailing: label(
+                            component.status.label,
+                            style: .caption2, color: .secondaryLabelColor)
+                    ))
             }
         }
+
+        stack.addArrangedSubview(separator())
+        let checked = statusManager.lastUpdated.map {
+            label("Checked \(Fmt.relative($0))", style: .caption2, color: .secondaryLabelColor)
+        }
+        let open = ActionButton(title: "Open status page →") {
+            NSWorkspace.shared.open(URL(string: "https://status.claude.com")!)
+        }
+        open.bezelStyle = .inline
+        open.controlSize = .mini
+        stack.addArrangedSubview(row(checked, trailing: open))
+
+        let panel = PanelView(color: NSColor.systemOrange.withAlphaComponent(0.10))
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(stack)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -10),
+            stack.topAnchor.constraint(equalTo: panel.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -10),
+        ])
+        return panel
     }
 
-    private var statusDetails: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(statusManager.filteredIncidents) { incident in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(incident.name)
-                        .font(.system(size: 12, weight: .semibold))
-                        .fixedSize(horizontal: false, vertical: true)
-                    HStack(spacing: 8) {
-                        Text(incident.status.rawValue.uppercased())
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(incident.status.badgeColor)
-                            .cornerRadius(3)
-                        if let updatedAt = incident.updatedAt {
-                            Text("Updated \(Fmt.relative(updatedAt))")
-                                .font(.caption2)
-                                .foregroundColor(Color.secondaryText)
-                        }
-                    }
-                    if !incident.latestUpdate.isEmpty {
-                        Text(incident.latestUpdate)
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 2)
-                    }
-                }
-            }
-
-            if statusManager.filteredIncidents.isEmpty && !statusManager.affectedComponents.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Affected services")
-                        .font(.caption2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(Color.secondaryText)
-                    ForEach(statusManager.affectedComponents) { component in
-                        HStack(spacing: 6) {
-                            Circle().fill(Color.orange).frame(width: 5, height: 5)
-                            Text(component.name).font(.caption2)
-                            Spacer()
-                            Text(component.status.label)
-                                .font(.caption2)
-                                .foregroundColor(Color.secondaryText)
-                        }
-                    }
-                }
-            }
-
-            Divider()
-
-            HStack {
-                if let lastUpdated = statusManager.lastUpdated {
-                    Text("Checked \(Fmt.relative(lastUpdated))")
-                        .font(.caption2)
-                        .foregroundColor(Color.secondaryText)
-                }
-                Spacer()
-                Button("Open status page →") {
-                    NSWorkspace.shared.open(URL(string: "https://status.claude.com")!)
-                }
-                .buttonStyle(.borderless)
-                .font(.caption2)
-            }
+    private func footer() -> NSView {
+        let updated = store.lastUpdated.map {
+            label(
+                "Last updated: \(Fmt.timeOfDay.string(from: $0))",
+                style: .caption, color: .secondaryLabelColor)
         }
-        .padding(10)
-        .background(Color.orange.opacity(0.10))
-        .cornerRadius(6)
+        let refresh = ActionButton(title: store.isRefreshing ? "Refreshing…" : "Refresh") {
+            [weak self] in self?.onRefresh()
+        }
+        refresh.isEnabled = !store.isRefreshing
+        refresh.bezelStyle = .inline
+        refresh.controlSize = .small
+        return row(updated, trailing: refresh)
     }
 
-    // MARK: Footer
-
-    private var footer: some View {
-        HStack {
-            if let lastUpdated = store.lastUpdated {
-                Text("Last updated: \(Fmt.timeOfDay.string(from: lastUpdated))")
-                    .font(.caption)
-                    .foregroundColor(Color.secondaryText)
-            }
-            Spacer()
-            Button(store.isRefreshing ? "Refreshing…" : "Refresh") {
-                Task {
-                    await store.refresh()
-                    await statusManager.fetch()
+    private func settingsSection() -> NSView {
+        let stack = verticalStack(spacing: 12)
+        let toggle = ActionButton(title: showingSettings ? "Hide Settings" : "Settings") {
+            [weak self] in
+            guard let self else { return }
+            self.showingSettings.toggle()
+            self.reload()
+            if self.showingSettings {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.scrollView.contentView.scroll(
+                        to: NSPoint(x: 0, y: CGFloat.greatestFiniteMagnitude)
+                    )
+                    self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
                 }
             }
-            .buttonStyle(.borderless)
-            .font(.caption)
-            .disabled(store.isRefreshing)
         }
+        toggle.bezelStyle = .inline
+        toggle.controlSize = .small
+        stack.addArrangedSubview(toggle)
+        if showingSettings {
+            stack.addArrangedSubview(settingsPanel())
+        }
+        return stack
     }
 
-    // MARK: Settings
+    private func settingsPanel() -> NSView {
+        let stack = verticalStack(spacing: 12)
+        stack.addArrangedSubview(
+            checkbox(
+                title: "Open at Login",
+                detail: "Launch automatically when you log in",
+                isOn: settings.openAtLogin
+            ) { [weak settings] value in settings?.applyLoginItem(value) })
+        stack.addArrangedSubview(
+            checkbox(
+                title: "Claude Outage Notifications",
+                detail: "Alert when a tracked Claude service goes down",
+                isOn: settings.statusNotificationsEnabled
+            ) { [weak settings] value in settings?.statusNotificationsEnabled = value })
 
-    private var settingsToggle: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button(showingSettings ? "Hide Settings" : "Settings") {
-                showingSettings.toggle()
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-
-            if showingSettings {
-                settingsPanel
-                Color.clear.frame(height: 1).id("settings-anchor")
-            }
+        stack.addArrangedSubview(separator())
+        stack.addArrangedSubview(
+            checkbox(
+                title: "Keyboard Shortcut (⌘U)",
+                detail: "Toggle this popup from anywhere",
+                isOn: settings.shortcutEnabled
+            ) { [weak settings] value in settings?.shortcutEnabled = value })
+        if settings.shortcutEnabled && store.shortcutConflict {
+            stack.addArrangedSubview(
+                label(
+                    "⌘U is already in use by another app, so the shortcut is inactive.",
+                    style: .caption2,
+                    color: .systemOrange
+                ))
         }
+
+        stack.addArrangedSubview(separator())
+        stack.addArrangedSubview(budgetSettings())
+        stack.addArrangedSubview(separator())
+
+        let tracked = verticalStack(spacing: 6)
+        tracked.addArrangedSubview(
+            label(
+                "Claude status alerts: services to track",
+                style: .caption, weight: .semibold))
+        tracked.addArrangedSubview(
+            label(
+                "Untracked services never color the dot or trigger an alert.",
+                style: .caption2,
+                color: .secondaryLabelColor
+            ))
+        for component in statusManager.components {
+            tracked.addArrangedSubview(
+                checkbox(
+                    title: component.name,
+                    isOn: settings.trackedComponentIDs.contains(component.id)
+                ) { [weak settings] _ in settings?.toggleComponent(component.id) })
+        }
+        stack.addArrangedSubview(tracked)
+
+        stack.addArrangedSubview(separator())
+        stack.addArrangedSubview(appearanceControl())
+
+        let panel = PanelView(color: NSColor.secondaryLabelColor.withAlphaComponent(0.08))
+        panel.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(stack)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: panel.topAnchor, constant: 8),
+            stack.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -8),
+        ])
+        return panel
     }
 
-    private var settingsPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Toggle(isOn: Binding(
-                get: { settings.openAtLogin },
-                set: { settings.applyLoginItem($0) }
-            )) {
-                settingLabel("Open at Login", "Launch automatically when you log in")
-            }
-            .toggleStyle(.checkbox)
-
-            Toggle(isOn: $settings.statusNotificationsEnabled) {
-                settingLabel("Claude Outage Notifications",
-                             "Alert when a tracked Claude service goes down")
-            }
-            .toggleStyle(.checkbox)
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(isOn: $settings.shortcutEnabled) {
-                    settingLabel("Keyboard Shortcut (⌘U)",
-                                 "Toggle this popup from anywhere")
-                }
-                .toggleStyle(.switch)
-
-                if settings.shortcutEnabled && store.shortcutConflict {
-                    Text("⌘U is already in use by another app, so the shortcut is inactive.")
-                        .font(.caption2)
-                        .foregroundColor(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            Divider()
-            budgetOverrideSettings
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Claude status alerts: services to track")
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                Text("Untracked services never color the dot or trigger an alert.")
-                    .font(.caption2)
-                    .foregroundColor(Color.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                ForEach(statusManager.components) { component in
-                    Toggle(isOn: Binding(
-                        get: { settings.trackedComponentIDs.contains(component.id) },
-                        set: { _ in settings.toggleComponent(component.id) }
-                    )) {
-                        Text(component.name).font(.caption2)
-                    }
-                    .toggleStyle(.checkbox)
-                }
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Appearance").font(.caption)
-                Picker("Appearance", selection: $settings.appearanceMode) {
-                    ForEach(AppearanceMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
+    private func budgetSettings() -> NSView {
+        let stack = verticalStack(spacing: 6)
+        stack.addArrangedSubview(label("Monthly budget", style: .caption, weight: .semibold))
+        let candidates = store.visibleProviders.filter {
+            store.snapshot(for: $0)?.budgetReading?.limitMinor == nil
+        }
+        if candidates.isEmpty {
+            stack.addArrangedSubview(
+                label(
+                    "Both providers report their own limits, so nothing to set here.",
+                    style: .caption2,
+                    color: .secondaryLabelColor
+                ))
+        } else {
+            for provider in candidates {
+                stack.addArrangedSubview(budgetField(provider))
             }
         }
-        .padding(8)
-        .background(Color.secondary.opacity(0.1))
-        .cornerRadius(6)
+        return stack
     }
 
-    /// Only offered for providers that are signed in but report no cap of their own;
-    /// offering it where the API already answers would invite a stale figure to
-    /// contradict billed truth.
-    @ViewBuilder
-    private var budgetOverrideSettings: some View {
-        let candidates = store.visibleProviders.filter { provider in
-            store.snapshot(for: provider)?.budgetReading?.limitMinor == nil
-        }
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Monthly budget")
-                .font(.caption)
-                .fontWeight(.semibold)
-            if candidates.isEmpty {
-                Text("Both providers report their own limits, so nothing to set here.")
-                    .font(.caption2)
-                    .foregroundColor(Color.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+    private func budgetField(_ provider: Provider) -> NSView {
+        let name = label(provider.displayName, style: .caption2)
+        name.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        let field = CommitTextField()
+        field.placeholderString = "e.g. 1000"
+        field.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        field.stringValue =
+            settings.budgetOverrideMinor[provider].map {
+                String(format: "%.2f", Double($0) / 100)
+            } ?? ""
+        field.widthAnchor.constraint(equalToConstant: 90).isActive = true
+
+        let commit: () -> Void = { [weak self, weak field] in
+            guard let self, let field else { return }
+            let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+            if text.isEmpty {
+                self.settings.budgetOverrideMinor[provider] = nil
+            } else if let value = Double(text), value > 0, value.isFinite {
+                self.settings.budgetOverrideMinor[provider] = Int((value * 100).rounded())
             } else {
-                ForEach(candidates) { provider in
-                    BudgetOverrideField(provider: provider, settings: settings)
-                }
+                NSSound.beep()
+                field.textColor = .systemOrange
+            }
+        }
+        field.onCommit = commit
+        let set = ActionButton(title: "Set", action: commit)
+        set.controlSize = .small
+
+        var trailing: [NSView] = [name, field, set]
+        if settings.budgetOverrideMinor[provider] != nil {
+            let clear = ActionButton(title: "Clear") { [weak settings] in
+                settings?.budgetOverrideMinor[provider] = nil
+            }
+            clear.controlSize = .small
+            trailing.append(clear)
+        }
+        return row(trailing)
+    }
+
+    private func appearanceControl() -> NSView {
+        let stack = verticalStack(spacing: 4)
+        stack.addArrangedSubview(label("Appearance", style: .caption))
+        let modes = AppearanceMode.allCases
+        let segmented = ActionSegmentedControl(labels: modes.map(\.label)) {
+            [weak settings] index in
+            guard modes.indices.contains(index) else { return }
+            settings?.appearanceMode = modes[index]
+        }
+        segmented.selectedSegment = modes.firstIndex(of: settings.appearanceMode) ?? 0
+        segmented.segmentStyle = .automatic
+        stack.addArrangedSubview(segmented)
+        return stack
+    }
+
+    private func checkbox(
+        title: String,
+        detail: String? = nil,
+        isOn: Bool,
+        action: @escaping (Bool) -> Void
+    ) -> NSView {
+        let button = ToggleButton(title: title, isOn: isOn, action: action)
+        button.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        guard let detail else { return button }
+        let stack = verticalStack(spacing: 2)
+        stack.addArrangedSubview(button)
+        let detailLabel = label(detail, style: .caption2, color: .secondaryLabelColor)
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        stack.addArrangedSubview(detailLabel)
+        return stack
+    }
+
+    private func progressBar(percent: Double) -> NSView {
+        let bar = UsageProgressBar(
+            fraction: percent / 100,
+            color: UsageTier(percent: percent).nsColor)
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        return bar
+    }
+
+    private enum LabelStyle {
+        case headline
+        case subheadline
+        case caption
+        case caption2
+
+        var size: CGFloat {
+            switch self {
+            case .headline: return NSFont.systemFontSize
+            case .subheadline: return NSFont.smallSystemFontSize + 1
+            case .caption: return NSFont.smallSystemFontSize
+            case .caption2: return NSFont.smallSystemFontSize - 1
             }
         }
     }
 
-    private func settingLabel(_ title: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.caption)
-            Text(detail)
-                .font(.caption2)
-                .foregroundColor(Color.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+    private func label(
+        _ text: String,
+        style: LabelStyle,
+        weight: NSFont.Weight = .regular,
+        color: NSColor = .labelColor
+    ) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = NSFont.systemFont(ofSize: style.size, weight: weight)
+        field.textColor = color
+        field.maximumNumberOfLines = 0
+        field.lineBreakMode = .byWordWrapping
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+
+    private func verticalStack(spacing: CGFloat) -> NSStackView {
+        VerticalStackView(spacing: spacing)
+    }
+
+    private func row(_ views: [NSView]) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        return stack
+    }
+
+    private func row(_ leading: NSView?, _ middle: NSView? = nil, trailing: NSView?) -> NSView {
+        var views: [NSView] = []
+        if let leading { views.append(leading) }
+        if let middle { views.append(middle) }
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        views.append(spacer)
+        if let trailing { views.append(trailing) }
+        let stack = row(views)
+        stack.distribution = .fill
+        return stack
+    }
+
+    private func separator() -> NSView {
+        let box = NSBox()
+        box.boxType = .separator
+        return box
     }
 }
 
-// MARK: - Budget override field
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
 
-/// Accepts whole and decimal amounts, stores minor units, and rejects anything that is
-/// not a positive number rather than silently persisting a zero.
-private struct BudgetOverrideField: View {
-    let provider: Provider
-    @ObservedObject var settings: Settings
-
-    @State private var text: String = ""
-    @State private var isInvalid = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 6) {
-                Text(provider.displayName)
-                    .font(.caption2)
-                    .frame(width: 48, alignment: .leading)
-                TextField("e.g. 1000", text: $text)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.caption2)
-                    .frame(width: 90)
-                    .onSubmit(commit)
-                Button("Set", action: commit)
-                    .controlSize(.small)
-                if settings.budgetOverrideMinor[provider] != nil {
-                    Button("Clear") {
-                        settings.budgetOverrideMinor[provider] = nil
-                        text = ""
-                        isInvalid = false
-                    }
-                    .controlSize(.small)
-                }
-            }
-            if isInvalid {
-                Text("Enter a positive amount.")
-                    .font(.caption2)
-                    .foregroundColor(.orange)
-            }
-        }
-        .onAppear {
-            if let minor = settings.budgetOverrideMinor[provider] {
-                text = String(format: "%.2f", Double(minor) / 100)
-            }
-        }
+private final class VerticalStackView: NSStackView {
+    init(spacing: CGFloat) {
+        super.init(frame: .zero)
+        orientation = .vertical
+        alignment = .leading
+        self.spacing = spacing
     }
 
-    private func commit() {
-        let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else {
-            settings.budgetOverrideMinor[provider] = nil
-            isInvalid = false
-            return
-        }
-        guard let value = Double(trimmed), value > 0, value.isFinite else {
-            isInvalid = true
-            return
-        }
-        isInvalid = false
-        settings.budgetOverrideMinor[provider] = Int((value * 100).rounded())
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func addArrangedSubview(_ view: NSView) {
+        super.addArrangedSubview(view)
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
     }
 }
 
-// MARK: - Window helpers
+private final class ActionButton: NSButton {
+    private let actionHandler: () -> Void
+
+    init(title: String, action: @escaping () -> Void) {
+        actionHandler = action
+        super.init(frame: .zero)
+        self.title = title
+        target = self
+        self.action = #selector(performAction)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    @objc private func performAction() {
+        actionHandler()
+    }
+}
+
+private final class ToggleButton: NSButton {
+    private let actionHandler: (Bool) -> Void
+
+    init(title: String, isOn: Bool, action: @escaping (Bool) -> Void) {
+        actionHandler = action
+        super.init(frame: .zero)
+        self.title = title
+        setButtonType(.switch)
+        state = isOn ? .on : .off
+        target = self
+        self.action = #selector(performAction)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    @objc private func performAction() {
+        actionHandler(state == .on)
+    }
+}
+
+private final class CommitTextField: NSTextField, NSTextFieldDelegate {
+    var onCommit: (() -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        onCommit?()
+    }
+}
+
+private final class ActionSegmentedControl: NSSegmentedControl {
+    private let actionHandler: (Int) -> Void
+
+    init(labels: [String], action: @escaping (Int) -> Void) {
+        actionHandler = action
+        super.init(frame: .zero)
+        segmentCount = labels.count
+        trackingMode = .selectOne
+        for (index, label) in labels.enumerated() {
+            setLabel(label, forSegment: index)
+        }
+        target = self
+        self.action = #selector(performAction)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    @objc private func performAction() {
+        actionHandler(selectedSegment)
+    }
+}
+
+private final class UsageProgressBar: NSView {
+    private let fraction: CGFloat
+    private let color: NSColor
+
+    init(fraction: Double, color: NSColor) {
+        self.fraction = CGFloat(max(0, min(1, fraction)))
+        self.color = color
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(
+            roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+        NSColor.labelColor.withAlphaComponent(0.12).setFill()
+        path.fill()
+        guard fraction > 0 else { return }
+        let filled = NSRect(
+            x: bounds.minX, y: bounds.minY,
+            width: bounds.width * fraction, height: bounds.height)
+        color.setFill()
+        NSBezierPath(roundedRect: filled, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+            .fill()
+    }
+}
+
+private final class StatusDot: NSView {
+    private let color: NSColor
+
+    init(color: NSColor) {
+        self.color = color
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        color.setFill()
+        NSBezierPath(ovalIn: bounds).fill()
+    }
+}
+
+private final class PanelView: NSView {
+    init(color: NSColor) {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.backgroundColor = color.cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is unavailable")
+    }
+}
 
 extension RateWindow {
-    /// A same-day window shows a time; a multi-day one needs the date too.
     var isSessionLength: Bool { id == WindowID.session }
 }

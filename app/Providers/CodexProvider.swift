@@ -25,7 +25,8 @@ final class CodexProvider: UsageProvider, Sendable {
     // MARK: Credentials
 
     private static var authPath: String {
-        let home = ProcessInfo.processInfo.environment["CODEX_HOME"]
+        let home =
+            ProcessInfo.processInfo.environment["CODEX_HOME"]
             ?? (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
         return (home as NSString).appendingPathComponent("auth.json")
     }
@@ -56,10 +57,126 @@ final class CodexProvider: UsageProvider, Sendable {
         }
     }
 
+    private struct UsageResponse: Decodable, Sendable {
+        struct Window: Decodable, Sendable {
+            let usedPercent: APINumber?
+            let limitWindowSeconds: APINumber?
+            let resetAt: APINumber?
+            let resetsAt: APINumber?
+
+            private enum CodingKeys: String, CodingKey {
+                case usedPercent = "used_percent"
+                case limitWindowSeconds = "limit_window_seconds"
+                case resetAt = "reset_at"
+                case resetsAt = "resets_at"
+            }
+        }
+
+        struct IndividualLimit: Decodable, Sendable {
+            let limit: APINumber?
+            let used: APINumber?
+            let resetAt: APINumber?
+            let resetsAt: APINumber?
+
+            private enum CodingKeys: String, CodingKey {
+                case limit, used
+                case resetAt = "reset_at"
+                case resetsAt = "resets_at"
+            }
+        }
+
+        struct RateLimit: Decodable, Sendable {
+            let limitReached: APIBool?
+            let primaryWindow: Window?
+            let secondaryWindow: Window?
+            let individualLimit: IndividualLimit?
+
+            private enum CodingKeys: String, CodingKey {
+                case limitReached = "limit_reached"
+                case primaryWindow = "primary_window"
+                case secondaryWindow = "secondary_window"
+                case individualLimit = "individual_limit"
+            }
+        }
+
+        struct AdditionalRateLimit: Decodable, Sendable {
+            let limitName: String?
+            let meteredFeature: String?
+            let rateLimit: RateLimit?
+
+            private enum CodingKeys: String, CodingKey {
+                case limitName = "limit_name"
+                case meteredFeature = "metered_feature"
+                case rateLimit = "rate_limit"
+            }
+        }
+
+        struct SpendControl: Decodable, Sendable {
+            let individualLimit: IndividualLimit?
+            let reached: APIBool?
+
+            private enum CodingKeys: String, CodingKey {
+                case reached
+                case individualLimit = "individual_limit"
+            }
+        }
+
+        struct Credits: Decodable, Sendable {
+            let balance: APINumber?
+            let overageLimitReached: APIBool?
+
+            private enum CodingKeys: String, CodingKey {
+                case balance
+                case overageLimitReached = "overage_limit_reached"
+            }
+        }
+
+        let planType: String?
+        let rateLimit: RateLimit?
+        let additionalRateLimits: [AdditionalRateLimit]?
+        let individualLimit: IndividualLimit?
+        let spendControl: SpendControl?
+        let credits: Credits?
+
+        private enum CodingKeys: String, CodingKey {
+            case planType = "plan_type"
+            case rateLimit = "rate_limit"
+            case additionalRateLimits = "additional_rate_limits"
+            case individualLimit = "individual_limit"
+            case spendControl = "spend_control"
+            case credits
+        }
+    }
+
+    private struct TokenRefreshRequest: Encodable {
+        let clientID: String
+        let grantType: GrantType
+        let refreshToken: String
+
+        enum GrantType: String, Encodable {
+            case refreshToken = "refresh_token"
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case clientID = "client_id"
+            case grantType = "grant_type"
+            case refreshToken = "refresh_token"
+        }
+    }
+
+    private struct TokenRefreshResponse: Decodable {
+        let accessToken: String
+
+        private enum CodingKeys: String, CodingKey {
+            case accessToken = "access_token"
+        }
+    }
+
     private static func loadCredentials() throws -> StoredCredentials {
         guard let data = FileManager.default.contents(atPath: authPath),
-              let credentials = try? JSONDecoder().decode(StoredCredentials.self, from: data),
-              !credentials.accessToken.isEmpty else {
+            let credentials = try? JSONDecoder().decode(StoredCredentials.self, from: data),
+            !credentials.accessToken.isEmpty
+        else {
             throw UsageError.notLoggedIn(.codex)
         }
         return credentials
@@ -76,7 +193,8 @@ final class CodexProvider: UsageProvider, Sendable {
         } catch UsageError.unauthorized {
             // One retry only: a refresh that is itself rejected must not loop.
             guard let refreshToken = stored.refreshToken,
-                  let fresh = try await refreshAccessToken(refreshToken) else {
+                let fresh = try await refreshAccessToken(refreshToken)
+            else {
                 throw UsageError.unauthorized
             }
             await tokenCache.write(fresh)
@@ -86,9 +204,10 @@ final class CodexProvider: UsageProvider, Sendable {
     }
 
     private func fetchUsage(accessToken: String) async throws -> ProviderSnapshot {
-        var request = URLRequest(url: Self.usageURL,
-                                 cachePolicy: .reloadIgnoringLocalCacheData,
-                                 timeoutInterval: 15)
+        var request = URLRequest(
+            url: Self.usageURL,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 15)
         request.httpMethod = "GET"
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -99,26 +218,24 @@ final class CodexProvider: UsageProvider, Sendable {
         }
         if http.statusCode == 401 { throw UsageError.unauthorized }
         guard http.statusCode == 200 else { throw UsageError.http(status: http.statusCode) }
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        guard let usage = try? JSONDecoder().decode(UsageResponse.self, from: data) else {
             throw UsageError.malformed(field: "body")
         }
 
-        let credits = JSONNumber.object(json["credits"])
-        let reading = Self.decodeBudget(json)
+        let reading = Self.decodeBudget(usage)
 
         // The bare balance is only informative when there is no budget to frame it.
         var balanceMinor: Int?
         var creditUnit: BudgetUnit?
-        if reading == nil, let credits,
-           let balance = JSONNumber.int(credits["balance"]), balance > 0 {
+        if reading == nil, let balance = usage.credits?.balance?.roundedInt, balance > 0 {
             balanceMinor = balance
             creditUnit = .credits(exponent: 0)
         }
 
         return ProviderSnapshot(
             provider: .codex,
-            planLabel: JSONNumber.string(json["plan_type"]).map { $0.capitalized },
-            windows: Self.decodeWindows(json),
+            planLabel: usage.planType.map { $0.capitalized },
+            windows: Self.decodeWindows(usage),
             budgetReading: reading,
             creditBalanceMinor: balanceMinor,
             creditUnit: creditUnit,
@@ -132,25 +249,27 @@ final class CodexProvider: UsageProvider, Sendable {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "client_id": Self.oauthClientID,
-            "grant_type": "refresh_token",
-            "refresh_token": refreshToken,
-        ])
+        request.httpBody = try JSONEncoder().encode(
+            TokenRefreshRequest(
+                clientID: Self.oauthClientID,
+                grantType: .refreshToken,
+                refreshToken: refreshToken
+            ))
 
         let (data, response) = try await HTTPClient.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let result = try? JSONDecoder().decode(TokenRefreshResponse.self, from: data)
+        else {
             return nil
         }
-        return JSONNumber.string(json["access_token"])
+        return result.accessToken
     }
 
     // MARK: Windows
 
     /// Codex names windows by length rather than by role, and reports extra per-model
     /// meters in a parallel array.
-    private static func decodeWindows(_ json: [String: Any]) -> [RateWindow] {
+    private static func decodeWindows(_ response: UsageResponse) -> [RateWindow] {
         var windows: [RateWindow] = []
         var seen = Set<String>()
 
@@ -160,45 +279,54 @@ final class CodexProvider: UsageProvider, Sendable {
             windows.append(window)
         }
 
-        let limitReached = JSONNumber.object(json["rate_limit"])
-            .flatMap { JSONNumber.bool($0["limit_reached"]) } ?? false
+        let limitReached = response.rateLimit?.limitReached?.value ?? false
 
-        if let rateLimit = JSONNumber.object(json["rate_limit"]) {
-            append(window(from: JSONNumber.object(rateLimit["primary_window"]),
-                          idOverride: nil, labelOverride: nil, isActive: limitReached))
-            append(window(from: JSONNumber.object(rateLimit["secondary_window"]),
-                          idOverride: nil, labelOverride: nil, isActive: limitReached))
+        if let rateLimit = response.rateLimit {
+            append(
+                window(
+                    from: rateLimit.primaryWindow,
+                    idOverride: nil, labelOverride: nil, isActive: limitReached))
+            append(
+                window(
+                    from: rateLimit.secondaryWindow,
+                    idOverride: nil, labelOverride: nil, isActive: limitReached))
         }
 
-        for extra in JSONNumber.array(json["additional_rate_limits"]) ?? [] {
-            let name = JSONNumber.string(extra["limit_name"])
-            let feature = JSONNumber.string(extra["metered_feature"]) ?? name ?? "extra"
-            let inner = JSONNumber.object(extra["rate_limit"])
-            append(window(from: inner.flatMap { JSONNumber.object($0["primary_window"]) },
-                          idOverride: "extra_\(feature)",
-                          labelOverride: name,
-                          isActive: inner.flatMap { JSONNumber.bool($0["limit_reached"]) } ?? false))
+        for extra in response.additionalRateLimits ?? [] {
+            let name = extra.limitName
+            let feature = extra.meteredFeature ?? name ?? "extra"
+            append(
+                window(
+                    from: extra.rateLimit?.primaryWindow,
+                    idOverride: "extra_\(feature)",
+                    labelOverride: name,
+                    isActive: extra.rateLimit?.limitReached?.value ?? false))
         }
 
         return windows
     }
 
-    private static func window(from object: [String: Any]?,
-                               idOverride: String?,
-                               labelOverride: String?,
-                               isActive: Bool) -> RateWindow? {
+    private static func window(
+        from object: UsageResponse.Window?,
+        idOverride: String?,
+        labelOverride: String?,
+        isActive: Bool
+    ) -> RateWindow? {
         guard let object,
-              let percent = JSONNumber.double(object["used_percent"]) else { return nil }
+            let percent = object.usedPercent?.value
+        else { return nil }
 
-        let seconds = JSONNumber.double(object["limit_window_seconds"]) ?? 0
+        let seconds = object.limitWindowSeconds?.value ?? 0
         // Both spellings appear across the HTTP response and the CLI's on-disk records.
-        let resetsAt = DateParse.epoch(object["reset_at"]) ?? DateParse.epoch(object["resets_at"])
+        let resetsAt = DateParse.epoch(object.resetAt) ?? DateParse.epoch(object.resetsAt)
 
-        let id = idOverride ?? (seconds > 0 && seconds < 21_600 ? WindowID.session : WindowID.weekly)
+        let id =
+            idOverride ?? (seconds > 0 && seconds < 21_600 ? WindowID.session : WindowID.weekly)
         let label = labelOverride ?? Fmt.windowLabel(seconds: seconds)
 
-        return RateWindow(id: id, label: label, percent: percent,
-                          resetsAt: resetsAt, isActive: isActive)
+        return RateWindow(
+            id: id, label: label, percent: percent,
+            resetsAt: resetsAt, isActive: isActive)
     }
 
     // MARK: Budget
@@ -206,22 +334,20 @@ final class CodexProvider: UsageProvider, Sendable {
     /// `individual_limit` has been observed at three different nesting levels, so all
     /// three are checked. It is credit-denominated: OpenAI publishes no credit-to-dollar
     /// rate and the payload carries no currency code, so it is never shown as money.
-    private static func decodeBudget(_ json: [String: Any]) -> BudgetReading? {
-        let candidates: [[String: Any]?] = [
-            JSONNumber.object(json["individual_limit"]),
-            JSONNumber.object(json["rate_limit"]).flatMap { JSONNumber.object($0["individual_limit"]) },
-            JSONNumber.object(json["spend_control"]).flatMap { JSONNumber.object($0["individual_limit"]) },
+    private static func decodeBudget(_ response: UsageResponse) -> BudgetReading? {
+        let candidates: [UsageResponse.IndividualLimit?] = [
+            response.individualLimit,
+            response.rateLimit?.individualLimit,
+            response.spendControl?.individualLimit,
         ]
 
         guard let limitObject = candidates.compactMap({ $0 }).first else { return nil }
-        let limit = JSONNumber.int(limitObject["limit"])
-        let used = JSONNumber.int(limitObject["used"])
+        let limit = limitObject.limit?.roundedInt
+        let used = limitObject.used?.roundedInt
         guard limit != nil || used != nil else { return nil }
 
-        let reached = JSONNumber.object(json["spend_control"])
-            .flatMap { JSONNumber.bool($0["reached"]) } ?? false
-        let outOfCredits = JSONNumber.object(json["credits"])
-            .flatMap { JSONNumber.bool($0["overage_limit_reached"]) } ?? false
+        let reached = response.spendControl?.reached?.value ?? false
+        let outOfCredits = response.credits?.overageLimitReached?.value ?? false
 
         return BudgetReading(
             spentMinor: used,
@@ -229,8 +355,8 @@ final class CodexProvider: UsageProvider, Sendable {
             unit: .credits(exponent: 0),
             scope: nil,
             state: outOfCredits ? .outOfCredits : (reached ? .limitReached : .active),
-            resetsAt: DateParse.epoch(limitObject["resets_at"])
-                   ?? DateParse.epoch(limitObject["reset_at"])
+            resetsAt: DateParse.epoch(limitObject.resetsAt)
+                ?? DateParse.epoch(limitObject.resetAt)
         )
     }
 }

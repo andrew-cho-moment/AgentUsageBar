@@ -29,7 +29,7 @@ SOURCES=(
     Providers/CodexProvider.swift
 )
 
-FRAMEWORKS=(SwiftUI AppKit Carbon UserNotifications ServiceManagement Security)
+FRAMEWORKS=(AppKit Carbon UserNotifications ServiceManagement Security)
 
 cd "$(dirname "$0")"
 

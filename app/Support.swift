@@ -1,4 +1,3 @@
-import SwiftUI
 import AppKit
 import os
 
@@ -39,45 +38,54 @@ func debugLog(_ message: @autoclosure () -> String) {
     appLogger.notice("\(text, privacy: .public)")
 }
 
-// MARK: - JSON coercion
+// MARK: - API scalar decoding
 
-/// JSONSerialization hands back NSNumber for every JSON number, and both providers
-/// are inconsistent about type: Claude's `used_credits` is a float, Codex's
-/// `individual_limit.used` has been observed as the string "7761". Reading these with
-/// `as? Int` returns nil for anything fractional or quoted, which is how upstream
-/// silently reported $0 of spend. Everything numeric goes through here.
-enum JSONNumber {
-    static func double(_ value: Any?) -> Double? {
-        switch value {
-        case let n as NSNumber: return n.doubleValue
-        case let s as String:   return Double(s)
-        default:                return nil
+/// Provider APIs inconsistently encode numbers as JSON numbers and decimal strings.
+/// Decoding that variation once keeps every response model typed without building an
+/// `[String: Any]` object graph.
+struct APINumber: Decodable, Sendable {
+    let value: Double
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let number = try? container.decode(Double.self), number.isFinite {
+            value = number
+            return
         }
-    }
-
-    static func int(_ value: Any?) -> Int? {
-        guard let d = double(value), d.isFinite else { return nil }
-        return Int(d.rounded())
-    }
-
-    static func bool(_ value: Any?) -> Bool? {
-        switch value {
-        case let b as Bool:     return b
-        case let n as NSNumber: return n.boolValue
-        default:                return nil
+        if let string = try? container.decode(String.self),
+            let number = Double(string), number.isFinite
+        {
+            value = number
+            return
         }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Expected a finite number or decimal string"
+        )
     }
 
-    static func string(_ value: Any?) -> String? {
-        value as? String
-    }
+    var roundedInt: Int { Int(value.rounded()) }
+}
 
-    static func object(_ value: Any?) -> [String: Any]? {
-        value as? [String: Any]
-    }
+/// A few older provider payloads encode booleans as 0 or 1. Other numeric values are
+/// rejected so an API contract change cannot silently flip a setting.
+struct APIBool: Decodable, Sendable {
+    let value: Bool
 
-    static func array(_ value: Any?) -> [[String: Any]]? {
-        value as? [[String: Any]]
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let boolean = try? container.decode(Bool.self) {
+            value = boolean
+            return
+        }
+        if let integer = try? container.decode(Int.self), integer == 0 || integer == 1 {
+            value = integer == 1
+            return
+        }
+        throw DecodingError.dataCorruptedError(
+            in: container,
+            debugDescription: "Expected a boolean or 0/1"
+        )
     }
 }
 
@@ -95,8 +103,8 @@ enum DateParse {
     }
 
     /// Codex sends Unix epoch seconds, sometimes as `resets_at` and sometimes `reset_at`.
-    static func epoch(_ value: Any?) -> Date? {
-        guard let seconds = JSONNumber.double(value), seconds > 0 else { return nil }
+    static func epoch(_ value: APINumber?) -> Date? {
+        guard let seconds = value?.value, seconds > 0 else { return nil }
         return Date(timeIntervalSince1970: seconds)
     }
 }
@@ -190,8 +198,9 @@ enum Fmt {
     @MainActor
     static func resetPhrase(_ date: Date, includeDate: Bool) -> String {
         let floored = flooredToMinute(date)
-        return includeDate ? "on \(dayAndTime.string(from: floored))"
-                           : "at \(timeOfDay.string(from: floored))"
+        return includeDate
+            ? "on \(dayAndTime.string(from: floored))"
+            : "at \(timeOfDay.string(from: floored))"
     }
 
     @MainActor
@@ -216,23 +225,11 @@ enum Fmt {
 
     /// Codex reports window length rather than a name; derive the label from it.
     static func windowLabel(seconds: Double) -> String {
-        if seconds < 21_600  { return "Session (\(Int((seconds / 3600).rounded())) hour)" }
+        if seconds < 21_600 { return "Session (\(Int((seconds / 3600).rounded())) hour)" }
         if seconds < 172_800 { return "Daily (24 hour)" }
         if seconds < 1_209_600 { return "Weekly (7 day)" }
         return "Limit (\(Int((seconds / 86_400).rounded())) day)"
     }
-}
-
-// MARK: - Shared colors
-
-extension Color {
-    /// System gray in dark; darker in light, where a vibrant ~50% gray over the white
-    /// popover backing reads as washed out.
-    static let secondaryText = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? .secondaryLabelColor
-            : NSColor(white: 0.24, alpha: 1.0) // opaque: vibrancy washes out alpha grays
-    })
 }
 
 /// Severity thresholds shared by the bars, the labels and the menu bar glyph, so a
@@ -242,46 +239,17 @@ enum UsageTier: Hashable {
 
     init(percent: Double) {
         switch percent {
-        case ..<70:  self = .normal
-        case ..<90:  self = .warning
-        default:     self = .critical
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .normal:   return .green
-        case .warning:  return .orange
-        case .critical: return .red
+        case ..<70: self = .normal
+        case ..<90: self = .warning
+        default: self = .critical
         }
     }
 
     var nsColor: NSColor {
         switch self {
-        case .normal:   return NSColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1.0)
-        case .warning:  return NSColor(red: 1.00, green: 0.80, blue: 0.00, alpha: 1.0)
+        case .normal: return NSColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1.0)
+        case .warning: return NSColor(red: 1.00, green: 0.80, blue: 0.00, alpha: 1.0)
         case .critical: return NSColor(red: 1.00, green: 0.23, blue: 0.19, alpha: 1.0)
         }
-    }
-}
-
-// MARK: - Usage bar
-
-/// Deterministic bar: the native linear ProgressView ignores .tint() under aqua and
-/// vibrant rendering and falls back to accent blue.
-struct UsageBar: View {
-    let fraction: Double
-    let color: Color
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.12))
-                Capsule()
-                    .fill(color)
-                    .frame(width: max(0, min(1, fraction)) * geo.size.width)
-            }
-        }
-        .frame(height: 6)
     }
 }
