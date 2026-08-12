@@ -84,24 +84,14 @@ enum JSONNumber {
 // MARK: - Dates
 
 enum DateParse {
-    // DateFormatter and ISO8601DateFormatter are documented thread-safe for
-    // formatting and parsing, so these are shared rather than rebuilt per call.
-    private static let isoFractional: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    private static let isoPlain: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        return f
-    }()
+    private static let isoFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
+    private static let isoPlain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
 
     /// Claude sends ISO-8601, with or without fractional seconds.
     static func iso(_ string: String?) -> Date? {
         guard let string, !string.isEmpty else { return nil }
-        return isoFractional.date(from: string) ?? isoPlain.date(from: string)
+        return (try? Date(string, strategy: isoFractional))
+            ?? (try? Date(string, strategy: isoPlain))
     }
 
     /// Codex sends Unix epoch seconds, sometimes as `resets_at` and sometimes `reset_at`.
@@ -114,9 +104,10 @@ enum DateParse {
 // MARK: - Formatting
 
 enum Fmt {
-    private static let cacheLock = NSLock()
+    @MainActor
     private static var currencyFormatters: [String: NumberFormatter] = [:]
 
+    @MainActor
     private static let creditFormatter: NumberFormatter = {
         let f = NumberFormatter()
         f.numberStyle = .decimal
@@ -124,6 +115,7 @@ enum Fmt {
         return f
     }()
 
+    @MainActor
     static let timeOfDay: DateFormatter = {
         let f = DateFormatter()
         f.timeStyle = .short
@@ -131,21 +123,22 @@ enum Fmt {
         return f
     }()
 
+    @MainActor
     static let dayAndTime: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "d MMM 'at' h:mm a"
         return f
     }()
 
+    @MainActor
     static let monthDay: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "MMM d"
         return f
     }()
 
+    @MainActor
     private static func currencyFormatter(code: String, exponent: Int) -> NumberFormatter {
-        cacheLock.lock()
-        defer { cacheLock.unlock() }
         let key = "\(code)/\(exponent)"
         if let existing = currencyFormatters[key] { return existing }
         let f = NumberFormatter()
@@ -158,6 +151,7 @@ enum Fmt {
     }
 
     /// Renders a minor-unit amount in its own unit. Credits never get a currency symbol.
+    @MainActor
     static func amount(_ minor: Int, unit: BudgetUnit) -> String {
         let scale = pow(10.0, Double(unit.exponent))
         switch unit {
@@ -173,6 +167,7 @@ enum Fmt {
     }
 
     /// Compact form for the menu bar: no fractional part, no "credits" suffix.
+    @MainActor
     static func amountCompact(_ minor: Int, unit: BudgetUnit) -> String {
         let value = (Double(minor) / pow(10.0, Double(unit.exponent))).rounded()
         switch unit {
@@ -192,12 +187,14 @@ enum Fmt {
         return Date(timeIntervalSinceReferenceDate: (seconds / 60).rounded(.down) * 60)
     }
 
+    @MainActor
     static func resetPhrase(_ date: Date, includeDate: Bool) -> String {
         let floored = flooredToMinute(date)
         return includeDate ? "on \(dayAndTime.string(from: floored))"
                            : "at \(timeOfDay.string(from: floored))"
     }
 
+    @MainActor
     static func shortReset(_ date: Date) -> String {
         "Resets \(monthDay.string(from: flooredToMinute(date)))"
     }

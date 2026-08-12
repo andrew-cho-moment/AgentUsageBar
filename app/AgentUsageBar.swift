@@ -104,9 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
             object: nil, queue: .main
         ) { [weak self] _ in
+            guard let delegate = self else { return }
             // The defaults key can lag the notification; re-resolve a tick later.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                MainActor.assumeIsolated { self?.applyAppearance() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak delegate] in
+                MainActor.assumeIsolated { delegate?.applyAppearance() }
             }
         }
     }
