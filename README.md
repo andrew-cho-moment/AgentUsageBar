@@ -1,139 +1,132 @@
-# ClaudeUsageBar
+# AgentUsageBar
 
-> Track your Claude.ai usage right from your Mac menu bar!
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![macOS](https://img.shields.io/badge/macOS-12.0+-blue.svg)](https://www.apple.com/macos/)
-
-<a href="https://www.producthunt.com/products/claudeusagebar?utm_source=badge-top-post-badge&utm_medium=badge&utm_campaign=badge-claudeusagebar" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=1067826&theme=dark&period=daily&t=1769934818885" alt="ClaudeUsageBar - #1 Product of the Day" width="250" height="54" /></a>
-
-A lightweight, open-source macOS menu bar application that displays your Claude.ai session and weekly usage limits with real-time updates and notifications.
-
-## 📥 Download
-
-**[Download Latest Release](https://github.com/Artzainnn/claudeusagebar/releases)** (DMG Installer)
-
-## 📦 Set Up (1mn)
-
-1. Go to [claude.ai/settings/usage](https://claude.ai/settings/usage)
-2. Open Developer Tools (`Cmd+Option+I`) → **Network** tab
-3. Refresh the page, click the **"usage"** request
-4. Copy the full **"Cookie"** value from the Request Headers
-
-![Setup Guide](setup-guide.png)
-
-## ✨ Features
-
-- 🟢 **Real-time usage tracking** - Monitor session (5-hour) and weekly (7-day) limits
-- 🎨 **Color-coded menu bar icon** - Visual spark icon that changes color (green/yellow/red)
-- 🔔 **Smart notifications** - Alerts at 25%, 50%, 75%, 90% usage thresholds
-- ⌨️ **Keyboard shortcut** - Toggle popup with Cmd+U from anywhere
-- ⚡ **Auto-refresh** - Updates every 5 minutes automatically
-- 🔒 **Privacy-first** - All data stored locally on your Mac
-- 📊 **Pro plan support** - Shows weekly Sonnet usage for Pro subscribers
-- 🎯 **Menu bar only** - No Dock icon, stays out of your way
-
-[See full feature list →](app/README.md)
-
-## 🚀 Quick Start
-
-1. **Download** `ClaudeUsageBar-Installer.dmg` from [Releases](https://github.com/Artzainnn/ClaudeUsageBar/releases)
-2. **Open DMG** and drag ClaudeUsageBar to Applications folder
-3. **Launch** ClaudeUsageBar from Applications
-4. **Set cookie** from claude.ai (follow in-app instructions)
-5. **Done!** Usage appears in menu bar
-
-## 📸 Screenshots
-
-**Menu Bar Display:**
-```
-⚡ 45%  (Green spark icon when usage < 70%)
-```
-
-**Popup Interface:**
-- Session (5-hour) usage with progress bar
-- Weekly (7-day) usage with progress bar
-- Weekly Sonnet usage (Pro plan only)
-- Settings for notifications and shortcuts
-
-## 📁 Repository Structure
+A macOS menu bar app showing Claude and Codex usage, including how much of a monthly
+dollar budget has been spent.
 
 ```
-app/        - macOS menu bar application (Swift/SwiftUI)
-website/    - Landing page (HTML/CSS)
+◉ 16%/6%  <> 22%
 ```
 
-## 🛠️ Build from Source
+Each provider appears only when you are signed in to it. Numbers are the rate-limit
+windows that provider actually reports; the dollar budget lives in the popover.
 
-**Requirements:**
-- macOS 12.0 (Monterey) or later
-- Xcode Command Line Tools
+Private fork of [Artzainnn/ClaudeUsageBar](https://github.com/Artzainnn/ClaudeUsageBar)
+with Codex support ported from
+[Artzainnn/CodexUsageBar](https://github.com/Artzainnn/CodexUsageBar).
 
-**Build the app:**
+## What it shows
+
+**Claude** — session (5 hour), weekly (7 day), any model-scoped weekly caps, and:
+
+```
+Monthly budget                              Manage →
+████████████████████░░░░░░░░░░░░  61%
+$611.53 of $1,000.00 · $388.47 left · 61%
+```
+
+**Codex** — whichever rate-limit windows the account reports, plus per-model meters
+like GPT-5.3-Codex-Spark once they rise above 1%.
+
+**Claude service status** — a severity dot and, during an incident, an expandable panel.
+Only the services you tick in Settings count.
+
+## Authentication
+
+No cookies to paste. Both providers are read from credentials their CLIs already wrote:
+
+| Provider | Source | Endpoint |
+|---|---|---|
+| Claude | Keychain item `Claude Code-credentials` (written by `claude login`) | `api.anthropic.com/api/oauth/usage` |
+| Codex  | `~/.codex/auth.json` (written by `codex login`) | `chatgpt.com/backend-api/wham/usage` |
+
+On first launch macOS asks permission to read Claude Code's Keychain item. Click
+**Always Allow**.
+
+Codex tokens are refreshed on a 401 against `auth.openai.com/oauth/token` and kept **in
+memory only** — `~/.codex/auth.json` stays owned by the CLI and is never written to.
+This app persists no credential of its own.
+
+## Build
+
 ```bash
 cd app
-chmod +x build.sh
-./build.sh
+./make_signing_cert.sh          # once: creates a stable local signing identity
+CODESIGN_IDENTITY="AgentUsageBar Dev" ./build.sh
 ```
 
-**Create DMG installer:**
+Then drag `app/build/AgentUsageBar.app` to `/Applications`.
+
+`./build.sh` alone works and signs ad-hoc, but ad-hoc signatures change on every build,
+which invalidates the Keychain grant each time. The certificate exists to give the app a
+stable identity; it is not a Developer ID and cannot be notarized or distributed.
+
+Requires macOS 14+. Builds a universal binary.
+
+## Budgets
+
+The Claude budget comes from the API. It is read from `spend.limit` / `spend.used`
+(`{amount_minor, currency, exponent}` triples), falling back to `extra_usage`
+(`monthly_limit`, `used_credits`).
+
+If a provider reports spend but no limit, Settings offers a **Monthly budget** field to
+supply one. A budget filled in this way is labelled as yours, not as billed truth. The
+field is hidden for providers that report their own limit.
+
+**Codex budgets are credits, never dollars.** Codex exposes a monthly cap at
+`spend_control.individual_limit`, but only on Business/Edu/Enterprise seats, and it is
+credit-denominated with no currency field and no OpenAI-published credit-to-dollar rate.
+It is rendered as `7,761 of 100,000 credits`, and it is `null` on personal Plus/Pro
+accounts.
+
+## Notifications
+
+Claude outage alerts only, and only for the services you track.
+
+`UNUserNotificationCenter` requires an Apple-issued Team ID, which a self-signed build
+does not have, so delivery falls back to `osascript`. Alerts then appear attributed to
+Script Editor rather than to this app. The native path is preferred automatically if the
+app is ever signed with a Developer ID.
+
+## Menu bar behavior
+
+The app suppresses its own Claude mark when Claude Desktop is running **and** it managed
+to park beside Claude Desktop's own item, so the Claude logo never appears twice. It
+finds that slot by reading `NSStatusItem Preferred Position Item-0` from
+`com.anthropic.claudefordesktop`'s preferences — no Accessibility permission needed.
+
+That key is undocumented and the position is advisory. If either the parking or the
+detection fails, the mark is shown, so a number is never left without a label. Codex has
+no menu bar app of its own, so its mark always shows.
+
+## Diagnostics
+
+Nothing is logged by default: both providers return bearer-authenticated account data,
+and the unified log is readable by any process running as you.
+
 ```bash
-./create_dmg.sh
+launchctl setenv AGENTUSAGEBAR_DEBUG 1
+open /Applications/AgentUsageBar.app
+/usr/bin/log show --last 5m --predicate 'subsystem == "com.andrewcho.agentusagebar"'
+launchctl unsetenv AGENTUSAGEBAR_DEBUG
 ```
 
-The built app will be in `app/build/ClaudeUsageBar.app`
+Use `/usr/bin/log`; `log` is a zsh builtin that shadows it.
 
-## 🔧 Development
+## Removed from upstream
 
-### Project Structure
+- The update and announcement channel, which polled the upstream author's `latest.json`
+  every 3 hours and rendered author-controlled banner text, buttons and OS notification
+  titles on your machine.
+- The donation link.
+- Session and budget threshold notifications.
+- Cookie storage. Upstream kept a full claude.ai session cookie in plaintext
+  `UserDefaults`, readable by any process running as you.
+- The Accessibility permission prompt. Carbon hot keys never needed it.
 
-- `app/ClaudeUsageBar.swift` - Main application code
-- `app/build.sh` - Build script
-- `app/create_dmg.sh` - DMG installer creation
-- `website/index.html` - Landing page
+## Limits
 
-### Key Technologies
+Both providers use internal, undocumented endpoints that can change without notice. The
+Claude OAuth endpoint is the one Claude Code itself uses, so it is the more stable.
 
-- **SwiftUI** - Modern macOS UI framework
-- **AppKit** - Menu bar integration
-- **Carbon** - Global keyboard shortcuts
-- **NSUserNotification** - System notifications (no permissions needed)
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how you can help:
-
-- 🐛 Report bugs via [Issues](https://github.com/Artzainnn/claudeusagebar/issues)
-- 💡 Suggest features or improvements
-- 🔧 Submit pull requests
-- 📖 Improve documentation
-- 🌍 Translate the website
-
-## 📄 License
-
-MIT License - see [LICENSE](LICENSE) for details
-
-## ⚠️ Disclaimer
-
-This app uses Claude.ai's internal API endpoints which may change without notice. It is not affiliated with or endorsed by Anthropic. Use at your own risk.
-
-## 🙏 Support
-
-If you find this useful, consider:
-- ⭐ Starring this repository
-- 📢 Sharing with others who use Claude
-
-## 🔗 Links
-
-- **Website:** [claudeusagebar.com](https://claudeusagebar.com)
-- **Issues:** [GitHub Issues](https://github.com/Artzainnn/claudeusagebar/issues)
-- **Releases:** [GitHub Releases](https://github.com/Artzainnn/claudeusagebar/releases)
-
-## 🔗 Other projects
-
-- **Mediaboost - Guaranteed PR feature:** [Mediaboost](https://mediaboost.press)
-- **CheckWorth - AI net worth estimates from LinkedIn:** [CheckWorth](https://checkworth.app)
-
----
-
-**Made with ❤️ for the Claude community**
+When a schema change does land, unrecognized values are surfaced in the popover rather
+than silently skipped.

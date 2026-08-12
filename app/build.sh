@@ -1,93 +1,105 @@
 #!/bin/bash
+set -euo pipefail
 
-# Build script for ClaudeUsageBar
+# Build script for AgentUsageBar.
+#
+# Signing: set CODESIGN_IDENTITY to a Developer ID to produce a distributable build.
+# The default is ad-hoc ("-"), which is all a locally installed personal app needs.
+# Ad-hoc signatures cannot be notarized.
+#
+# Pass --no-launch to skip opening the app at the end (useful in a build loop).
 
-echo "Building ClaudeUsageBar..."
+APP_NAME="AgentUsageBar"
+BUNDLE="${APP_NAME}.app"
+APP_PATH="build/${BUNDLE}"
+DEPLOYMENT_TARGET="14.0"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
+LAUNCH=1
+[ "${1:-}" = "--no-launch" ] && LAUNCH=0
 
-# Create fresh build directory (delete any stale build to avoid accumulated xattrs
-# from prior signs, which can cause "resource fork / detritus" errors on codesign).
+SOURCES=(
+    AgentUsageBar.swift
+    AppState.swift
+    Models.swift
+    Support.swift
+    StatusManager.swift
+    MenuBarController.swift
+    UsageView.swift
+    Providers/ClaudeProvider.swift
+    Providers/CodexProvider.swift
+)
+
+FRAMEWORKS=(SwiftUI AppKit Carbon UserNotifications ServiceManagement Security)
+
+cd "$(dirname "$0")"
+
+echo "Building ${APP_NAME}..."
+
+# Fresh build dir: stale bundles accumulate extended attributes from prior signings,
+# which codesign then rejects as "resource fork / detritus".
 rm -rf build
-mkdir -p build
+mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 
-# Create app bundle structure first
-APP_NAME="ClaudeUsageBar.app"
-APP_PATH="build/$APP_NAME"
-
-mkdir -p "$APP_PATH/Contents/MacOS"
-mkdir -p "$APP_PATH/Contents/Resources"
-
-# Copy Info.plist
 cp Info.plist "$APP_PATH/Contents/"
 
-# Create icon if it doesn't exist
-if [ ! -f "ClaudeUsageBar.icns" ]; then
-    echo "Creating app icon..."
-    ./make_app_icon.sh >/dev/null 2>&1
+if [ ! -f "${APP_NAME}.icns" ] && [ -f ClaudeUsageBar.icns ]; then
+    cp ClaudeUsageBar.icns "${APP_NAME}.icns"
+fi
+if [ -f "${APP_NAME}.icns" ]; then
+    cp "${APP_NAME}.icns" "$APP_PATH/Contents/Resources/"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile ${APP_NAME}" "$APP_PATH/Contents/Info.plist" 2>/dev/null \
+        || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string ${APP_NAME}" "$APP_PATH/Contents/Info.plist"
 fi
 
-# Copy icon to Resources
-if [ -f "ClaudeUsageBar.icns" ]; then
-    cp ClaudeUsageBar.icns "$APP_PATH/Contents/Resources/"
-    # Update Info.plist to reference icon
-    /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string ClaudeUsageBar" "$APP_PATH/Contents/Info.plist" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile ClaudeUsageBar" "$APP_PATH/Contents/Info.plist"
-fi
+framework_flags=()
+for fw in "${FRAMEWORKS[@]}"; do framework_flags+=(-framework "$fw"); done
 
-# Compile the Swift app for arm64
-swiftc -parse-as-library -o "$APP_PATH/Contents/MacOS/ClaudeUsageBar_arm64" \
-    ClaudeUsageBar.swift \
-    -framework SwiftUI \
-    -framework AppKit \
-    -framework WebKit \
-    -target arm64-apple-macos12.0
+for arch in arm64 x86_64; do
+    echo "  compiling ${arch}..."
+    swiftc -parse-as-library -O \
+        -o "$APP_PATH/Contents/MacOS/${APP_NAME}_${arch}" \
+        "${SOURCES[@]}" \
+        "${framework_flags[@]}" \
+        -target "${arch}-apple-macos${DEPLOYMENT_TARGET}"
+done
 
-# Compile for x86_64 (Intel)
-swiftc -parse-as-library -o "$APP_PATH/Contents/MacOS/ClaudeUsageBar_x86_64" \
-    ClaudeUsageBar.swift \
-    -framework SwiftUI \
-    -framework AppKit \
-    -framework WebKit \
-    -target x86_64-apple-macos12.0
+lipo -create -output "$APP_PATH/Contents/MacOS/${APP_NAME}" \
+    "$APP_PATH/Contents/MacOS/${APP_NAME}_arm64" \
+    "$APP_PATH/Contents/MacOS/${APP_NAME}_x86_64"
+rm "$APP_PATH/Contents/MacOS/${APP_NAME}_arm64" "$APP_PATH/Contents/MacOS/${APP_NAME}_x86_64"
 
-# Create universal binary
-lipo -create -output "$APP_PATH/Contents/MacOS/ClaudeUsageBar" \
-    "$APP_PATH/Contents/MacOS/ClaudeUsageBar_arm64" \
-    "$APP_PATH/Contents/MacOS/ClaudeUsageBar_x86_64"
+printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
+chmod 755 "$APP_PATH/Contents/MacOS/${APP_NAME}"
 
-# Clean up individual arch binaries
-rm "$APP_PATH/Contents/MacOS/ClaudeUsageBar_arm64"
-rm "$APP_PATH/Contents/MacOS/ClaudeUsageBar_x86_64"
-
-# Create PkgInfo file
-echo -n "APPL????" > "$APP_PATH/Contents/PkgInfo"
-
-# Set proper permissions first
-chmod 755 "$APP_PATH/Contents/MacOS/ClaudeUsageBar"
-
-# Clean any "detritus" that codesign rejects: extended attributes, ._files, .DS_Store
+# Strip anything codesign treats as detritus.
 xattr -cr "$APP_PATH"
-find "$APP_PATH" -name '._*' -delete 2>/dev/null
-find "$APP_PATH" -name '.DS_Store' -delete 2>/dev/null
-dot_clean "$APP_PATH" 2>/dev/null
+find "$APP_PATH" -name '._*' -delete 2>/dev/null || true
+find "$APP_PATH" -name '.DS_Store' -delete 2>/dev/null || true
 
-# Sign with Developer ID certificate. NEVER silently fall back to ad-hoc — that
-# fails notarization later. If real signing fails, error out loudly.
-DEVELOPER_ID="Developer ID Application: Linkko Technology Pte Ltd (Q467HQ5432)"
-if codesign --force --deep --options runtime --sign "$DEVELOPER_ID" "$APP_PATH"; then
-    echo "✅ App signed with Developer ID"
-    if codesign --verify --verbose=2 "$APP_PATH" 2>&1 | grep -q "valid on disk"; then
-        echo "✅ Signature verified"
-    else
-        echo "❌ Signature verification failed — fix before shipping" >&2
+if [ "$CODESIGN_IDENTITY" = "-" ]; then
+    echo "  signing ad-hoc (set CODESIGN_IDENTITY for a Developer ID build)"
+    codesign --force --options runtime --sign - "$APP_PATH"
+else
+    echo "  signing as ${CODESIGN_IDENTITY}"
+    # An explicitly requested identity that cannot be used is a hard error: silently
+    # falling back to ad-hoc would only surface later, at notarization.
+    if ! codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"; then
+        echo "!! Signing with '${CODESIGN_IDENTITY}' failed. Not falling back to ad-hoc." >&2
         exit 1
     fi
-else
-    echo "❌ Developer ID signing failed. NOT falling back to ad-hoc (would break notarization)." >&2
-    echo "   Fix the cause above (often: stale xattrs / ._files / cert not in keychain) and re-run." >&2
-    exit 1
 fi
+# Captured rather than piped: `| grep -q` closes the pipe early, and under pipefail
+# codesign's resulting SIGPIPE reads as a verification failure.
+verify_output="$(codesign --verify --verbose=2 "$APP_PATH" 2>&1 || true)"
+case "$verify_output" in
+    *"valid on disk"*) ;;
+    *)
+        echo "!! Signature verification failed:" >&2
+        echo "$verify_output" >&2
+        exit 1
+        ;;
+esac
 
-echo "Build successful!"
-echo "App bundle created at: $APP_PATH"
-echo "Launching app..."
-open "$APP_PATH"
+echo "Built ${APP_PATH}"
+[ "$LAUNCH" = "1" ] && open "$APP_PATH"
+exit 0
