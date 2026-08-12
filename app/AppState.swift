@@ -33,6 +33,7 @@ final class Settings {
         static let shortcutEnabled = "shortcut_enabled"
         static let appearanceMode = "appearance_mode"
         static let trackedComponents = "tracked_component_ids"
+        static let openAtLogin = "open_at_login"
         static func budgetOverride(_ provider: Provider) -> String {
             "budget_override_minor_\(provider.rawValue)"
         }
@@ -93,7 +94,7 @@ final class Settings {
     }
 
     /// Read only when Settings is visible. Startup has no reason to initialize the
-    /// ServiceManagement client for a control the user may never open.
+    /// ServiceManagement client after the initial login-item choice has been saved.
     var openAtLogin: Bool { SMAppService.mainApp.status == .enabled }
 
     init() {
@@ -121,6 +122,13 @@ final class Settings {
 
     var hasTrackedComponentSelection: Bool { !trackedComponentIDs.isEmpty }
 
+    /// New installations start at login. A saved choice, including an explicit opt-out,
+    /// makes later launches a UserDefaults-only fast path.
+    func registerLoginItemIfUnconfigured() {
+        guard defaults.object(forKey: Key.openAtLogin) == nil else { return }
+        setLoginItem(true)
+    }
+
     func toggleComponent(_ id: String) {
         if trackedComponentIDs.contains(id) {
             trackedComponentIDs.remove(id)
@@ -129,19 +137,22 @@ final class Settings {
         }
     }
 
-    /// Registers or unregisters the real macOS login item, then re-reads the result so
-    /// a failure is visible in the checkbox instead of being silently assumed.
     func applyLoginItem(_ enabled: Bool) {
+        setLoginItem(enabled)
+        onViewChange?()
+    }
+
+    private func setLoginItem(_ enabled: Bool) {
         do {
             if enabled {
                 if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
             } else {
                 if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
             }
+            defaults.set(enabled, forKey: Key.openAtLogin)
         } catch {
             debugLog("Login item change failed: \(error.localizedDescription)")
         }
-        onViewChange?()
     }
 }
 

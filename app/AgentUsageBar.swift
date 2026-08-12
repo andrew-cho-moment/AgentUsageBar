@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         settings = Settings()
+        settings.registerLoginItemIfUnconfigured()
         store = AppStore(settings: settings)
         statusManager = StatusManager(settings: settings)
 

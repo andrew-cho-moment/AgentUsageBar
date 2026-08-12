@@ -90,6 +90,9 @@ app is ever signed with a Developer ID.
 
 ## Menu bar behavior
 
+AgentUsageBar starts at login by default. The Open at Login checkbox in Settings saves
+an explicit opt-out, so launching the app manually does not turn the login item back on.
+
 Each signed-in provider gets its own mark followed by its percentages. Both always show,
 so a number is never left without a label.
 
