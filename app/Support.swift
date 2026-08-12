@@ -2,6 +2,21 @@ import SwiftUI
 import AppKit
 import os
 
+// MARK: - Networking
+
+enum HTTPClient {
+    static let shared: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpMaximumConnectionsPerHost = 2
+        return URLSession(configuration: configuration)
+    }()
+}
+
 // MARK: - Logging
 
 /// Diagnostics are opt-in. Both providers return bearer-authenticated account data, and
@@ -225,7 +240,7 @@ extension Color {
 
 /// Severity thresholds shared by the bars, the labels and the menu bar glyph, so a
 /// number and its color can never disagree.
-enum UsageTier {
+enum UsageTier: Hashable {
     case normal, warning, critical
 
     init(percent: Double) {

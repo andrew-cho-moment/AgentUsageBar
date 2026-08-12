@@ -1,5 +1,6 @@
 import SwiftUI
 import UserNotifications
+import Security
 
 // MARK: - Types
 
@@ -112,20 +113,32 @@ struct StatusComponent: Identifiable, Equatable {
 /// notification scope chosen for this build is Claude service outages.
 @MainActor
 final class StatusManager: ObservableObject {
-    @Published private(set) var description: String = "All systems operational"
-    @Published private(set) var incidents: [StatusIncident] = []
-    @Published private(set) var components: [StatusComponent] = []
-    @Published private(set) var lastUpdated: Date?
-    @Published private(set) var hasFetched = false
-    @Published private(set) var unrecognized: [String] = []
+    private(set) var description: String = "All systems operational"
+    private(set) var incidents: [StatusIncident] = []
+    private(set) var components: [StatusComponent] = []
+    private(set) var lastUpdated: Date?
+    private(set) var hasFetched = false
+    private(set) var unrecognized: [String] = []
 
     private static let endpoint = URL(string: "https://status.claude.com/api/v2/summary.json")!
     private static let lastIndicatorKey = "last_effective_indicator"
 
     private let settings: Settings
+    private var isFetching = false
+    private var entityTag: String?
+    private var lastModified: String?
+    private var isViewActive = false
 
     init(settings: Settings) {
         self.settings = settings
+    }
+
+    func setViewActive(_ active: Bool) {
+        isViewActive = active
+    }
+
+    private func publishViewChange() {
+        if isViewActive { objectWillChange.send() }
     }
 
     // MARK: Filtered views
@@ -178,17 +191,34 @@ final class StatusManager: ObservableObject {
     // MARK: Fetch
 
     func fetch() async {
+        guard !isFetching else { return }
+        isFetching = true
+        defer { isFetching = false }
+
         var request = URLRequest(url: Self.endpoint,
                                  cachePolicy: .reloadIgnoringLocalCacheData,
                                  timeoutInterval: 15)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let entityTag { request.setValue(entityTag, forHTTPHeaderField: "If-None-Match") }
+        if let lastModified { request.setValue(lastModified, forHTTPHeaderField: "If-Modified-Since") }
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+        guard let (data, response) = try? await HTTPClient.shared.data(for: request),
+              let http = response as? HTTPURLResponse else {
             debugLog("Status fetch failed")
             return
         }
+        if http.statusCode == 304 {
+            publishViewChange()
+            lastUpdated = Date()
+            return
+        }
+        guard http.statusCode == 200 else {
+            debugLog("Status fetch failed with HTTP \(http.statusCode)")
+            return
+        }
+        entityTag = http.value(forHTTPHeaderField: "ETag")
+        lastModified = http.value(forHTTPHeaderField: "Last-Modified")
         // Parsed off the main actor; only the assignments below hop back.
         let parseTask = Task.detached(priority: .utility) { Self.parse(data) }
         guard let parsed = await parseTask.value else { return }
@@ -255,6 +285,7 @@ final class StatusManager: ObservableObject {
     private func apply(_ parsed: Parsed) {
         let isFirstFetch = !hasFetched
 
+        publishViewChange()
         description = parsed.description
         incidents = parsed.incidents
         unrecognized = parsed.unrecognized
@@ -308,13 +339,26 @@ final class StatusManager: ObservableObject {
 /// using it with no further change.
 @MainActor
 enum Notifier {
-    private static var nativeAuthorized = false
+    private enum NativeAuthorization {
+        case unchecked
+        case requesting
+        case authorized
+        case unavailable
+    }
 
-    static func requestAuthorization() {
+    private static var nativeAuthorization = NativeAuthorization.unchecked
+
+    static func prepare() {
+        guard nativeAuthorization == .unchecked else { return }
+        guard hasAppleTeamIdentifier else {
+            nativeAuthorization = .unavailable
+            return
+        }
+        nativeAuthorization = .requesting
         UNUserNotificationCenter.current()
             .requestAuthorization(options: [.alert, .sound]) { granted, error in
                 Task { @MainActor in
-                    nativeAuthorized = granted && error == nil
+                    nativeAuthorization = granted && error == nil ? .authorized : .unavailable
                     if let error {
                         debugLog("Native notifications unavailable (\(error.localizedDescription)); "
                                + "falling back to osascript delivery")
@@ -326,11 +370,28 @@ enum Notifier {
     }
 
     static func post(title: String, body: String) {
-        if nativeAuthorized {
+        if nativeAuthorization == .authorized {
             postNative(title: title, body: body)
         } else {
             postViaOSAScript(title: title, body: body)
         }
+    }
+
+    private static var hasAppleTeamIdentifier: Bool {
+        var code: SecCode?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return false }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess,
+              let staticCode else { return false }
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode,
+                                            SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &information) == errSecSuccess,
+              let values = information as? [String: Any],
+              let team = values[kSecCodeInfoTeamIdentifier as String] as? String else {
+            return false
+        }
+        return !team.isEmpty
     }
 
     private static func postNative(title: String, body: String) {

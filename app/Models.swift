@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Providers
 
-enum Provider: String, CaseIterable, Identifiable, Sendable {
+enum Provider: String, CaseIterable, Hashable, Identifiable, Sendable {
     case claude
     case codex
 
@@ -12,6 +12,16 @@ enum Provider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .claude: return "Claude"
         case .codex:  return "Codex"
+        }
+    }
+
+    /// The vendor's own menu bar artwork, shipped as a template PNG inside their app.
+    /// Preferred over a hand-drawn approximation; `Glyphs` falls back to a drawn path
+    /// when the app is not installed.
+    var vendorTemplate: (bundleID: String, resource: String) {
+        switch self {
+        case .claude: return ("com.anthropic.claudefordesktop", "TrayIconTemplate")
+        case .codex:  return ("com.openai.codex", "chatgptTemplate")
         }
     }
 
@@ -233,9 +243,6 @@ enum UsageError: LocalizedError, Equatable {
 
 protocol UsageProvider: Sendable {
     var provider: Provider { get }
-
-    /// Cheap, synchronous, no network: does a local credential exist?
-    func isSignedIn() -> Bool
 
     func fetch() async throws -> ProviderSnapshot
 }

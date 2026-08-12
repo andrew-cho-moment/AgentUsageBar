@@ -89,11 +89,20 @@ app is ever signed with a Developer ID.
 
 ## Menu bar behavior
 
-Each signed-in provider gets its own mark followed by its percentages: `✳` for Claude,
-`>_` for Codex. Both always show, so a number is never left without a label.
+Each signed-in provider gets its own mark followed by its percentages. Both always show,
+so a number is never left without a label.
 
-`>_` is the Codex CLI's own motif. OpenAI's hexagonal knot was tried first and collapses
-into a blob at 14pt, where the interlacing that carries the shape is finer than a pixel.
+The marks are the vendors' real ones, read at launch from the template PNGs inside their
+installed apps (`TrayIconTemplate` in Claude.app, `chatgptTemplate` in ChatGPT.app) and
+tinted to the usage tier, since template art is black plus alpha. Nothing is copied into
+this repo. When a vendor app is absent the mark falls back to a drawn path: a starburst
+for Claude, `>_` for Codex. Hand-drawn approximations of OpenAI's knot were tried and all
+collapsed into a blob, because the interlacing that carries the shape is finer than a
+pixel at this size.
+
+Marks render at 16pt rather than the 14pt the text implies. Anthropic's carries a dozen
+thin rays that fall under a pixel below that, which is why the vendors draw their own
+nearer 18pt.
 
 The app makes no attempt to sit beside Claude Desktop's or ChatGPT's own menu bar items.
 Claude Desktop publishes its slot as `NSStatusItem Preferred Position Item-0`, so

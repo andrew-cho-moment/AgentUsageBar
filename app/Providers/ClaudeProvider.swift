@@ -26,13 +26,25 @@ final class ClaudeProvider: UsageProvider, Sendable {
         }
     }
 
-    private let planLabelCache = PlanLabelCache()
+    private struct KeychainCredentials: Decodable {
+        struct OAuth: Decodable {
+            let accessToken: String?
+        }
 
-    // MARK: Sign-in
-
-    func isSignedIn() -> Bool {
-        (try? Self.accessToken()) != nil
+        let claudeAiOauth: OAuth?
+        let accessToken: String?
     }
+
+    private struct ClaudeConfig: Decodable {
+        struct OAuthAccount: Decodable {
+            let organizationName: String?
+            let seatTier: String?
+        }
+
+        let oauthAccount: OAuthAccount?
+    }
+
+    private let planLabelCache = PlanLabelCache()
 
     /// The Keychain item holds JSON rather than a bare token. Reading it prompts for
     /// consent the first time, since the item belongs to Claude Code.
@@ -50,12 +62,12 @@ final class ClaudeProvider: UsageProvider, Sendable {
             throw UsageError.keychain(status: status)
         }
         guard let data = item as? Data,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+              let credentials = try? JSONDecoder().decode(KeychainCredentials.self, from: data) else {
             throw UsageError.malformed(field: "keychain payload")
         }
         // Claude Code nests the token; tolerate a flat shape too.
-        let container = JSONNumber.object(json["claudeAiOauth"]) ?? json
-        guard let token = JSONNumber.string(container["accessToken"]), !token.isEmpty else {
+        guard let token = credentials.claudeAiOauth?.accessToken ?? credentials.accessToken,
+              !token.isEmpty else {
             throw UsageError.notLoggedIn(.claude)
         }
         return token
@@ -74,7 +86,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(Self.betaHeader, forHTTPHeaderField: "anthropic-beta")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await HTTPClient.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw UsageError.malformed(field: "response")
         }
@@ -249,11 +261,11 @@ final class ClaudeProvider: UsageProvider, Sendable {
         guard size > 0, size < 20_000_000 else { return nil }
 
         guard let data = try? Data(contentsOf: url),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let account = JSONNumber.object(json["oauthAccount"]) else { return nil }
+              let account = try? JSONDecoder().decode(ClaudeConfig.self, from: data).oauthAccount
+        else { return nil }
 
-        let org = JSONNumber.string(account["organizationName"])
-        let tier = JSONNumber.string(account["seatTier"]).map(prettifyTier)
+        let org = account.organizationName
+        let tier = account.seatTier.map(prettifyTier)
 
         switch (org, tier) {
         case let (org?, tier?): return "\(org) · \(tier)"

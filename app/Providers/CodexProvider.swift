@@ -30,24 +30,39 @@ final class CodexProvider: UsageProvider, Sendable {
         return (home as NSString).appendingPathComponent("auth.json")
     }
 
-    private struct StoredCredentials {
+    private struct StoredCredentials: Decodable {
+        private struct Tokens: Decodable {
+            let accessToken: String
+            let refreshToken: String?
+
+            private enum CodingKeys: String, CodingKey {
+                case accessToken = "access_token"
+                case refreshToken = "refresh_token"
+            }
+        }
+
         let accessToken: String
         let refreshToken: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case tokens
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let tokens = try container.decode(Tokens.self, forKey: .tokens)
+            accessToken = tokens.accessToken
+            refreshToken = tokens.refreshToken
+        }
     }
 
     private static func loadCredentials() throws -> StoredCredentials {
         guard let data = FileManager.default.contents(atPath: authPath),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tokens = JSONNumber.object(json["tokens"]),
-              let access = JSONNumber.string(tokens["access_token"]), !access.isEmpty else {
+              let credentials = try? JSONDecoder().decode(StoredCredentials.self, from: data),
+              !credentials.accessToken.isEmpty else {
             throw UsageError.notLoggedIn(.codex)
         }
-        return StoredCredentials(accessToken: access,
-                                 refreshToken: JSONNumber.string(tokens["refresh_token"]))
-    }
-
-    func isSignedIn() -> Bool {
-        (try? Self.loadCredentials()) != nil
+        return credentials
     }
 
     // MARK: Fetch
@@ -78,7 +93,7 @@ final class CodexProvider: UsageProvider, Sendable {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await HTTPClient.shared.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw UsageError.malformed(field: "response")
         }
@@ -123,7 +138,7 @@ final class CodexProvider: UsageProvider, Sendable {
             "refresh_token": refreshToken,
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await HTTPClient.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
