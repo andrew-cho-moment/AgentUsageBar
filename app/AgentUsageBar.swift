@@ -145,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     // MARK: Popover
 
     func togglePopover() {
+        debugLog("toggle requested: isShown=\(popover.isShown)")
         if popover.isShown {
             popover.performClose(nil)
             return

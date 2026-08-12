@@ -42,9 +42,6 @@ mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 
 cp Info.plist "$APP_PATH/Contents/"
 
-if [ ! -f "${APP_NAME}.icns" ] && [ -f ClaudeUsageBar.icns ]; then
-    cp ClaudeUsageBar.icns "${APP_NAME}.icns"
-fi
 if [ -f "${APP_NAME}.icns" ]; then
     cp "${APP_NAME}.icns" "$APP_PATH/Contents/Resources/"
     /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile ${APP_NAME}" "$APP_PATH/Contents/Info.plist" 2>/dev/null \
