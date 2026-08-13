@@ -6,10 +6,10 @@ AgentUsageBar is an Apple-silicon macOS menu-bar app for Claude and Codex usage.
 ✳ 16%/6%   >_ 22%
 ```
 
-The resident process is a 122 KB Objective-C executable. It keeps only fixed-size C
+The resident process is a 106 KB Objective-C executable. It keeps only fixed-size C
 records, one status item, and an optional manually drawn panel. Swift, URLSession, JSON
 decoding, Keychain access, and provider response objects live in helper processes that
-exit after each operation. The installed app occupies 976 KB.
+exit after each operation. The installed app occupies 908 KB.
 
 ## Resource use
 
@@ -18,8 +18,9 @@ Measured on macOS 26.5.2 after fetching both providers:
 | State | Physical footprint | Idle CPU |
 |---|---:|---:|
 | Previous Swift/AppKit build after using the panel | 25.7 MB | 0.0% |
-| Current build, panel closed | about 13 MB | 0.0% |
-| Current build, full panel visible | about 18–22 MB | 0.0% |
+| Current build, before the panel is opened | 12 MB | 0.0% |
+| Current build, panel visible | 13 MB | 0.0% |
+| Current build, after closing the panel | 12 MB | 0.0% |
 
 The remaining memory is macOS infrastructure. A minimal process containing only
 `NSApplication` and `NSStatusItem` measures about 12.4 MB on the same system. AppKit's
@@ -32,10 +33,12 @@ smaller because it uses AppKit directly without loading the Swift runtime. The S
 helper remains useful for typed provider decoding because its memory disappears when it
 exits.
 
-AppKit retains allocator and rendering caches after the panel closes. The app therefore
-starts a replacement host, waits for any active refresh to finish, and exits the old host.
-The replacement waits for the old process with a kernel event instead of polling, then
-returns to the 13 MB floor at 0.0% idle CPU.
+Showing the panel costs a few hundred KB of dirty memory, mostly `MALLOC_SMALL` growth and
+one CG image backing store that tracks the panel's height. Releasing the panel and calling
+`malloc_zone_pressure_relief` returns all of it, so the host holds one process and one
+status item for its whole life. Sampling the footprint once per second across an open and
+close cycle shows 12 MB, then 13 MB while visible, then 12 MB again, at a single unchanging
+pid.
 
 ## Refresh behavior
 
@@ -64,11 +67,13 @@ AgentUsageBar reads credentials already owned by the provider CLIs:
 The app stores no credentials. Codex token refreshes remain in the helper's memory and do
 not modify the CLI file.
 
-Keychain access lives in a dedicated 52 KB C helper with no provider or UI code. Unchanged
-source produces the same Mach-O UUID and macOS code hash across rebuilds. Provider and UI
-changes therefore preserve an existing Always Allow grant. The helper uses the stable
-identifier `com.andrewcho.agentusagebar.credential-helper` and the same signing
-certificate on every build. Ad-hoc signatures can trigger another prompt.
+The fetcher reads the Claude item by running `/usr/bin/security find-generic-password`,
+which never raises a consent prompt. Claude Code writes that item with
+`security add-generic-password -U` and passes neither `-T` nor `-A`, so every token refresh
+installs a fresh ACL trusting only `/usr/bin/security`. An Always Allow grant issued to any
+other binary therefore survives only until the next refresh, a few hours at most. Reading
+through the one tool already on the trusted-application list sidesteps that entirely, and
+leaves the app with no code that links `Security.framework`.
 
 ## Features
 
@@ -83,10 +88,12 @@ certificate on every build. Ad-hoc signatures can trigger another prompt.
 
 The panel uses one custom `NSView` with manual drawing and hit testing. It creates no
 Auto Layout graph and no control hierarchy. Closing it releases the panel, event monitors,
-view, and backing surfaces, then replaces the host after active refreshes finish.
+view, and backing surfaces, then asks the allocator to return unused pages.
 
-The host loads ServiceManagement only when the login setting changes. It registers the
-main app directly, then the next host replacement discards the framework's memory.
+The host loads ServiceManagement only when the login setting changes, which means first
+launch and explicit toggles. It registers the main app directly, because
+`SMAppService.mainAppService` resolves through the main bundle and reports `NotFound` from a
+bare helper in `Contents/Helpers`.
 
 ## Build
 
@@ -113,7 +120,7 @@ explicit identity.
 AgentUsageBar (resident Objective-C/AppKit host)
   ├─ AgentUsageFetcher -- usage mode
   │    provider files + URLSession + typed Swift decoders
-  │    └─ CredentialHelper
+  │    └─ /usr/bin/security
   │         one bounded Keychain read, then exits
   └─ AgentUsageFetcher -- status-only mode
        status.claude.com + optional notification

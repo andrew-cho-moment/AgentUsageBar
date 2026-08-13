@@ -3,11 +3,14 @@ set -euo pipefail
 
 # Creates a local, self-signed code-signing identity for AgentUsageBar.
 #
-# Why this exists: an ad-hoc signature ("codesign --sign -") identifies each build by
-# its code hash. The "Always Allow" grant for reading Claude Code's OAuth token stops
-# matching after every rebuild, so macOS prompts again. A stable self-signed certificate
-# keeps that identity consistent. It is NOT a Developer ID and cannot be notarized,
-# distributed, or authorize native notifications.
+# Why this exists: an ad-hoc signature ("codesign --sign -") identifies each build by its
+# code hash, so a rebuilt binary is a different application to macOS. A stable self-signed
+# certificate gives every build one designated requirement instead. It is NOT a Developer
+# ID and cannot be notarized, distributed, or authorize native notifications.
+#
+# This is not what governs the Keychain prompt. The app reads Claude Code's OAuth token by
+# running /usr/bin/security, which the item's ACL already trusts, so no grant is involved
+# and no prompt appears regardless of how the app is signed.
 #
 # Run once:   ./make_signing_cert.sh
 # Then build: ./build.sh
