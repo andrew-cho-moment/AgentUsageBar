@@ -7,20 +7,10 @@ import Foundation
 final class CodexProvider: UsageProvider, Sendable {
     let provider: Provider = .codex
 
-    /// Holds a refreshed access token for this process only. An actor rather than a
-    /// lock because the read and write both happen inside async work.
-    private actor TokenCache {
-        private var token: String?
-        func read() -> String? { token }
-        func write(_ value: String) { token = value }
-    }
-
     private static let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     private static let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
     /// Public client id of the Codex CLI, needed to redeem its refresh token.
     private static let oauthClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-
-    private let tokenCache = TokenCache()
 
     // MARK: Credentials
 
@@ -186,10 +176,8 @@ final class CodexProvider: UsageProvider, Sendable {
 
     func fetch() async throws -> ProviderSnapshot {
         let stored = try Self.loadCredentials()
-        let inMemory = await tokenCache.read()
-
         do {
-            return try await fetchUsage(accessToken: inMemory ?? stored.accessToken)
+            return try await fetchUsage(accessToken: stored.accessToken)
         } catch UsageError.unauthorized {
             // One retry only: a refresh that is itself rejected must not loop.
             guard let refreshToken = stored.refreshToken,
@@ -197,7 +185,6 @@ final class CodexProvider: UsageProvider, Sendable {
             else {
                 throw UsageError.unauthorized
             }
-            await tokenCache.write(fresh)
             return try await fetchUsage(accessToken: fresh)
         }
     }
@@ -215,7 +202,12 @@ final class CodexProvider: UsageProvider, Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw UsageError.malformed(field: "response")
         }
-        if http.statusCode == 401 { throw UsageError.unauthorized }
+        // 403 as well as 401: an expired token comes back either way here, and
+        // treating 403 as a plain HTTP error is what stopped `fetch` from ever
+        // reaching its refresh-and-retry path.
+        if http.statusCode == 401 || http.statusCode == 403 {
+            throw UsageError.unauthorized
+        }
         guard http.statusCode == 200 else { throw UsageError.http(status: http.statusCode) }
         guard let usage = try? JSONDecoder().decode(UsageResponse.self, from: data) else {
             throw UsageError.malformed(field: "body")
@@ -280,14 +272,8 @@ final class CodexProvider: UsageProvider, Sendable {
         let limitReached = response.rateLimit?.limitReached?.value ?? false
 
         if let rateLimit = response.rateLimit {
-            append(
-                window(
-                    from: rateLimit.primaryWindow,
-                    idOverride: nil, labelOverride: nil, isActive: limitReached))
-            append(
-                window(
-                    from: rateLimit.secondaryWindow,
-                    idOverride: nil, labelOverride: nil, isActive: limitReached))
+            append(window(from: rateLimit.primaryWindow, isActive: limitReached))
+            append(window(from: rateLimit.secondaryWindow, isActive: limitReached))
         }
 
         for extra in response.additionalRateLimits ?? [] {
@@ -306,8 +292,8 @@ final class CodexProvider: UsageProvider, Sendable {
 
     private static func window(
         from object: UsageResponse.Window?,
-        idOverride: String?,
-        labelOverride: String?,
+        idOverride: String? = nil,
+        labelOverride: String? = nil,
         isActive: Bool
     ) -> RateWindow? {
         guard let object,
@@ -318,8 +304,7 @@ final class CodexProvider: UsageProvider, Sendable {
         // Both spellings appear across the HTTP response and the CLI's on-disk records.
         let resetsAt = DateParse.epoch(object.resetAt) ?? DateParse.epoch(object.resetsAt)
 
-        let id =
-            idOverride ?? (seconds > 0 && seconds < 21_600 ? WindowID.session : WindowID.weekly)
+        let id = idOverride ?? Fmt.windowID(seconds: seconds)
         let label = labelOverride ?? Fmt.windowLabel(seconds: seconds)
 
         return RateWindow(

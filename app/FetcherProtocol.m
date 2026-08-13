@@ -76,6 +76,17 @@ static size_t AUBFields(char *line, char **fields, size_t capacity) {
   return cursor == NULL ? count : capacity + 1;
 }
 
+static bool AUBBool(const char *text, bool *value) {
+  if (strcmp(text, "0") == 0) {
+    *value = false;
+  } else if (strcmp(text, "1") == 0) {
+    *value = true;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 static bool AUBScope(const char *text, AUBBudgetScope *scope) {
   if (text[0] == '\0') {
     *scope = AUBBudgetScopeNone;
@@ -248,13 +259,8 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
         }
         window->hasReset = true;
       }
-      if (strcmp(fields[6], "0") == 0) {
-        window->active = false;
-      } else if (strcmp(fields[6], "1") == 0) {
-        window->active = true;
-      } else {
+      if (!AUBBool(fields[6], &window->active))
         return false;
-      }
       provider->windowCount++;
       continue;
     }
@@ -358,13 +364,8 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
       } else {
         return false;
       }
-      if (strcmp(fields[4], "0") == 0) {
-        component->tracked = false;
-      } else if (strcmp(fields[4], "1") == 0) {
-        component->tracked = true;
-      } else {
+      if (!AUBBool(fields[4], &component->tracked))
         return false;
-      }
       parsed.statusComponentCount++;
       continue;
     }
@@ -383,13 +384,20 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
 
   if (!hasVersion || !hasDone)
     return false;
-  if (mode == AUBFetcherModeUsage) {
-    if (!hasClaude || !hasCodex || parsed.hasStatus)
-      return false;
-  } else if (mode == AUBFetcherModeStatus) {
-    if (hasClaude || hasCodex || !parsed.hasStatus)
-      return false;
-  } else {
+  // Usage is all-or-nothing: one provider without the other is a truncated run.
+  if (AUBFetcherModeWantsUsage(mode) != (hasClaude && hasCodex) ||
+      hasClaude != hasCodex) {
+    return false;
+  }
+  // A half that was never asked for means the wrong helper ran.
+  if (parsed.hasStatus && !AUBFetcherModeWantsStatus(mode))
+    return false;
+  // Status is required when it is the only thing requested, but optional
+  // alongside usage: status.claude.com being unreachable must not throw away a
+  // good usage fetch. Callers test `hasStatus` before merging, and the poll
+  // retries either way.
+  if (!parsed.hasStatus && AUBFetcherModeWantsStatus(mode) &&
+      !AUBFetcherModeWantsUsage(mode)) {
     return false;
   }
   *result = parsed;
@@ -397,10 +405,8 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
 }
 
 bool AUBRunFetcher(const char *path, AUBFetcherMode mode, AUBSnapshot *result) {
-  if (path == NULL || result == NULL ||
-      (mode != AUBFetcherModeUsage && mode != AUBFetcherModeStatus)) {
+  if (path == NULL || result == NULL || mode > AUBFetcherModeAll)
     return false;
-  }
   enum { outputCapacity = 128 * 1024 };
   char *output = mmap(NULL, outputCapacity, PROT_READ | PROT_WRITE,
                       MAP_PRIVATE | MAP_ANON, -1, 0);
@@ -442,11 +448,10 @@ bool AUBRunFetcher(const char *path, AUBFetcherMode mode, AUBSnapshot *result) {
   }
 
   pid_t process = 0;
-  char *const arguments[] = {
-      (char *)path,
-      mode == AUBFetcherModeStatus ? "--status-only" : NULL,
-      NULL,
-  };
+  char *arguments[3] = {(char *)path, NULL, NULL};
+  if (AUBFetcherModeWantsStatus(mode)) {
+    arguments[1] = AUBFetcherModeWantsUsage(mode) ? "--all" : "--status-only";
+  }
   int spawnStatus =
       posix_spawn(&process, path, &actions, NULL, arguments, environ);
   posix_spawn_file_actions_destroy(&actions);

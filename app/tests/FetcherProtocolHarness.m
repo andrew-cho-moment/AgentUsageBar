@@ -5,7 +5,8 @@
 
 int main(int argc, char **argv) {
   if (argc != 3) {
-    fprintf(stderr, "usage: FetcherProtocolHarness <fetcher> <usage|status>\n");
+    fprintf(stderr,
+            "usage: FetcherProtocolHarness <fetcher> <usage|status|all>\n");
     return 2;
   }
 
@@ -14,6 +15,8 @@ int main(int argc, char **argv) {
     mode = AUBFetcherModeUsage;
   } else if (strcmp(argv[2], "status") == 0) {
     mode = AUBFetcherModeStatus;
+  } else if (strcmp(argv[2], "all") == 0) {
+    mode = AUBFetcherModeAll;
   } else {
     return 2;
   }

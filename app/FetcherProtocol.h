@@ -15,6 +15,11 @@ enum {
   AUBMaxStatusComponents = 16,
 };
 
+/// The two meters both providers report. Must match `WindowID` in Models.swift:
+/// the menu bar and the panel pick their headline rows out by these ids.
+#define AUBWindowIDSession "session"
+#define AUBWindowIDWeekly "weekly"
+
 typedef enum : uint8_t {
   AUBProviderStatusPending,
   AUBProviderStatusReady,
@@ -119,10 +124,29 @@ typedef struct {
   AUBProviderState codex;
 } AUBSnapshot;
 
+/// A provider contributes nothing to the menu bar or the panel until it has
+/// been fetched at least once and is actually signed in.
+static inline bool AUBProviderVisible(const AUBProviderState *provider) {
+  return provider->status != AUBProviderStatusSignedOut &&
+         provider->status != AUBProviderStatusPending;
+}
+
+/// Which halves of the snapshot one helper run produces. `All` exists so that
+/// wanting both costs one helper process rather than two, each of which would
+/// pay its own Foundation and CFNetwork load.
 typedef enum : uint8_t {
   AUBFetcherModeUsage,
   AUBFetcherModeStatus,
+  AUBFetcherModeAll,
 } AUBFetcherMode;
+
+static inline bool AUBFetcherModeWantsUsage(AUBFetcherMode mode) {
+  return mode == AUBFetcherModeUsage || mode == AUBFetcherModeAll;
+}
+
+static inline bool AUBFetcherModeWantsStatus(AUBFetcherMode mode) {
+  return mode == AUBFetcherModeStatus || mode == AUBFetcherModeAll;
+}
 
 bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
                            AUBSnapshot *result);
