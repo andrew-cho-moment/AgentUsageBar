@@ -1,9 +1,13 @@
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
 #import <malloc/malloc.h>
+
+#include <dlfcn.h>
+#include <errno.h>
 #import <spawn.h>
 #import <string.h>
-#import <sys/wait.h>
+#include <sys/event.h>
+#include <unistd.h>
 
 #import "FetcherProtocol.h"
 #import "SnapshotCache.h"
@@ -11,28 +15,135 @@
 
 extern char **environ;
 
-static bool AUBSetLoginItem(bool enabled) {
-  NSString *helper = [NSBundle.mainBundle.bundlePath
-      stringByAppendingPathComponent:@"Contents/Helpers/LoginItemHelper"];
-  if (helper == nil)
-    return false;
+typedef NS_ENUM(NSInteger, AUBAppServiceStatus) {
+  AUBAppServiceStatusNotRegistered,
+  AUBAppServiceStatusEnabled,
+  AUBAppServiceStatusRequiresApproval,
+  AUBAppServiceStatusNotFound,
+};
 
-  pid_t process = 0;
-  char *const arguments[] = {
-      (char *)helper.fileSystemRepresentation,
-      enabled ? "--enable" : "--disable",
-      NULL,
-  };
-  if (posix_spawn(&process, arguments[0], NULL, NULL, arguments, environ) !=
-      0) {
+@protocol AUBAppService <NSObject>
+@property(readonly) AUBAppServiceStatus status;
+- (BOOL)registerAndReturnError:(NSError **)error;
+- (BOOL)unregisterAndReturnError:(NSError **)error;
+@end
+
+@protocol AUBAppServiceClass <NSObject>
++ (id<AUBAppService>)mainAppService;
+@end
+
+typedef NS_ENUM(uint8_t, AUBLaunchMode) {
+  AUBLaunchModeNormal,
+  AUBLaunchModeReplaceProcess,
+};
+
+typedef struct {
+  AUBLaunchMode mode;
+  pid_t process;
+} AUBLaunch;
+
+static bool AUBParseProcess(const char *text, pid_t *process) {
+  if (text[0] == '\0')
+    return false;
+  char *end = NULL;
+  errno = 0;
+  long value = strtol(text, &end, 10);
+  if (errno != 0 || end == text || *end != '\0' || value <= 1 ||
+      value > INT_MAX) {
     return false;
   }
-  int status = 0;
-  pid_t waited = 0;
-  do {
-    waited = waitpid(process, &status, 0);
-  } while (waited < 0 && errno == EINTR);
-  return waited == process && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  *process = (pid_t)value;
+  return true;
+}
+
+static bool AUBParseLaunch(int argc, const char *argv[], AUBLaunch *launch) {
+  if (argc == 1) {
+    *launch = (AUBLaunch){.mode = AUBLaunchModeNormal};
+    return true;
+  }
+  if (argc == 3 && strcmp(argv[1], "--replace-process") == 0 &&
+      AUBParseProcess(argv[2], &launch->process)) {
+    launch->mode = AUBLaunchModeReplaceProcess;
+    return true;
+  }
+  return false;
+}
+
+static int AUBReplaceProcess(pid_t process, const char *executable) {
+  int queue = kqueue();
+  if (queue < 0)
+    return 2;
+  struct kevent change;
+  EV_SET(&change, (uintptr_t)process, EVFILT_PROC, EV_ADD | EV_ONESHOT,
+         NOTE_EXIT, 0, NULL);
+  if (kevent(queue, &change, 1, NULL, 0, NULL) != 0) {
+    int error = errno;
+    close(queue);
+    if (error != ESRCH)
+      return 2;
+  } else {
+    struct kevent event;
+    int count;
+    do {
+      count = kevent(queue, NULL, 0, &event, 1, NULL);
+    } while (count < 0 && errno == EINTR);
+    close(queue);
+    if (count != 1)
+      return 2;
+  }
+
+  char *const arguments[] = {(char *)executable, NULL};
+  execve(executable, arguments, environ);
+  return 2;
+}
+
+static bool AUBScheduleReplacement(void) {
+  NSString *executable = NSBundle.mainBundle.executablePath;
+  if (executable == nil)
+    return false;
+  char process[32];
+  int length = snprintf(process, sizeof(process), "%d", getpid());
+  if (length < 0 || (size_t)length >= sizeof(process))
+    return false;
+  char *const arguments[] = {
+      (char *)executable.fileSystemRepresentation,
+      "--replace-process",
+      process,
+      NULL,
+  };
+  pid_t replacement = 0;
+  return posix_spawn(&replacement, arguments[0], NULL, NULL, arguments,
+                     environ) == 0;
+}
+
+static bool AUBSetLoginItem(bool enabled) {
+  void *framework =
+      dlopen("/System/Library/Frameworks/ServiceManagement.framework/"
+             "ServiceManagement",
+             RTLD_LAZY | RTLD_LOCAL);
+  if (framework == NULL)
+    return false;
+  Class serviceClass = NSClassFromString(@"SMAppService");
+  if (serviceClass == Nil) {
+    dlclose(framework);
+    return false;
+  }
+  id<AUBAppService> service =
+      [(id<AUBAppServiceClass>)serviceClass mainAppService];
+  AUBAppServiceStatus status = service.status;
+  NSError *error = nil;
+  bool succeeded;
+  if (enabled) {
+    succeeded = status == AUBAppServiceStatusEnabled ||
+                status == AUBAppServiceStatusRequiresApproval ||
+                [service registerAndReturnError:&error];
+  } else {
+    succeeded = status == AUBAppServiceStatusNotRegistered ||
+                [service unregisterAndReturnError:&error];
+  }
+  service = nil;
+  dlclose(framework);
+  return succeeded;
 }
 
 static const AUBWindow *AUBHeadlineWindow(const AUBProviderState *provider,
@@ -132,6 +243,8 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
   bool _notificationsEnabled;
   bool _shortcutEnabled;
   bool _shortcutConflict;
+  bool _restartWhenIdle;
+  bool _terminating;
   AUBAppearanceMode _appearanceMode;
   uint32_t _statusRevision;
 }
@@ -141,6 +254,7 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
 - (void)refreshStatus;
 - (void)applyAppearance;
 - (void)applyBudgetOverrides;
+- (void)restartWhenIdle;
 @end
 
 static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
@@ -157,13 +271,16 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   (void)notification;
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  bool configuredLoginItem = false;
   id openAtLogin = [defaults objectForKey:@"open_at_login"];
   if (openAtLogin != nil) {
     _openAtLogin = [defaults boolForKey:@"open_at_login"];
   } else {
     _openAtLogin = AUBSetLoginItem(true);
-    if (_openAtLogin)
+    if (_openAtLogin) {
       [defaults setBool:YES forKey:@"open_at_login"];
+      configuredLoginItem = true;
+    }
   }
   _notificationsEnabled =
       [defaults objectForKey:@"status_notifications_enabled"] == nil
@@ -201,6 +318,10 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   } else {
     [self refresh];
   }
+  if (configuredLoginItem) {
+    _restartWhenIdle = true;
+    [self restartWhenIdle];
+  }
 }
 
 - (void)applyAppearance {
@@ -219,6 +340,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
   (void)notification;
+  _terminating = true;
   if (_hotKey != NULL)
     UnregisterEventHotKey(_hotKey);
   if (_hotKeyHandler != NULL)
@@ -300,6 +422,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
           self->_statusItem.button.title = @"!";
           self->_statusItem.button.toolTip = @"Usage refresh failed";
         }
+        [self restartWhenIdle];
       });
     }
   });
@@ -361,10 +484,13 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
           [self->_usagePanelView reload];
           [self updatePanelSize];
         }
-        if (self->_statusRefreshPending) {
+        if (self->_statusRefreshPending && !self->_restartWhenIdle) {
           self->_statusRefreshPending = false;
           [self refreshStatus];
+        } else {
+          self->_statusRefreshPending = false;
         }
+        [self restartWhenIdle];
       });
     }
   });
@@ -507,7 +633,22 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   _panel.contentView = nil;
   _usagePanelView = nil;
   _panel = nil;
-  malloc_zone_pressure_relief(NULL, 0);
+  if (!_terminating) {
+    _restartWhenIdle = true;
+    [self restartWhenIdle];
+  }
+}
+
+- (void)restartWhenIdle {
+  if (!_restartWhenIdle || _usageRefreshing || _statusRefreshing)
+    return;
+  _restartWhenIdle = false;
+  if (!AUBScheduleReplacement()) {
+    malloc_zone_pressure_relief(NULL, 0);
+    return;
+  }
+  _terminating = true;
+  [NSApp terminate:nil];
 }
 
 - (void)showContextMenu {
@@ -539,6 +680,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 }
 
 - (void)quit {
+  _terminating = true;
   [NSApp terminate:nil];
 }
 
@@ -734,7 +876,13 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 
 @end
 
-int main(void) {
+int main(int argc, const char *argv[]) {
+  AUBLaunch launch;
+  if (!AUBParseLaunch(argc, argv, &launch))
+    return 2;
+  if (launch.mode == AUBLaunchModeReplaceProcess)
+    return AUBReplaceProcess(launch.process, argv[0]);
+
   @autoreleasepool {
     NSApplication *application = NSApplication.sharedApplication;
     AUBAppDelegate *delegate = [AUBAppDelegate new];

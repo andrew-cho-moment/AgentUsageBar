@@ -7,7 +7,6 @@ APP_PATH="build/${APP_NAME}.app"
 EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_NAME"
 FETCHER="$APP_PATH/Contents/Helpers/AgentUsageFetcher"
 CREDENTIAL_HELPER="$APP_PATH/Contents/Helpers/CredentialHelper"
-LOGIN_ITEM_HELPER="$APP_PATH/Contents/Helpers/LoginItemHelper"
 LOCAL_SIGNING_IDENTITY="AgentUsageBar Dev"
 
 if [ -z "${CODESIGN_IDENTITY+x}" ]; then
@@ -80,23 +79,6 @@ xcrun clang \
 xcrun clang \
     -arch arm64 \
     -mmacosx-version-min=14.0 \
-    -fobjc-arc \
-    -Oz \
-    -flto \
-    -fvisibility=hidden \
-    -Wall \
-    -Wextra \
-    -Werror \
-    -framework Foundation \
-    -framework ServiceManagement \
-    -Wl,-dead_strip \
-    -Wl,-x \
-    -o "$LOGIN_ITEM_HELPER" \
-    LoginItemMain.m
-
-xcrun clang \
-    -arch arm64 \
-    -mmacosx-version-min=14.0 \
     -Oz \
     -Wall \
     -Wextra \
@@ -152,8 +134,6 @@ codesign --force --options runtime --identifier "$BUNDLE_ID" \
     --sign "$CODESIGN_IDENTITY" "$FETCHER"
 codesign --force --options runtime --identifier "$BUNDLE_ID.credential-helper" \
     --sign "$CODESIGN_IDENTITY" "$CREDENTIAL_HELPER"
-codesign --force --options runtime --identifier "$BUNDLE_ID.login-item-helper" \
-    --sign "$CODESIGN_IDENTITY" "$LOGIN_ITEM_HELPER"
 codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 

@@ -6,10 +6,10 @@ AgentUsageBar is an Apple-silicon macOS menu-bar app for Claude and Codex usage.
 ✳ 16%/6%   >_ 22%
 ```
 
-The resident process is a 106 KB Objective-C executable. It keeps only fixed-size C
-records, one status item, and an optional manually drawn panel. Swift, URLSession,
-ServiceManagement, JSON decoding, Keychain access, and provider response objects live in
-helper processes that exit after each operation.
+The resident process is a 122 KB Objective-C executable. It keeps only fixed-size C
+records, one status item, and an optional manually drawn panel. Swift, URLSession, JSON
+decoding, Keychain access, and provider response objects live in helper processes that
+exit after each operation. The installed app occupies 976 KB.
 
 ## Resource use
 
@@ -19,7 +19,7 @@ Measured on macOS 26.5.2 after fetching both providers:
 |---|---:|---:|
 | Previous Swift/AppKit build after using the panel | 25.7 MB | 0.0% |
 | Current build, panel closed | about 13 MB | 0.0% |
-| Current build, full panel visible | about 15 MB | 0.0% |
+| Current build, full panel visible | about 18–22 MB | 0.0% |
 
 The remaining memory is macOS infrastructure. A minimal process containing only
 `NSApplication` and `NSStatusItem` measures about 12.4 MB on the same system. AppKit's
@@ -31,6 +31,11 @@ Rust would still call AppKit and pay the same floor. Objective-C keeps the resid
 smaller because it uses AppKit directly without loading the Swift runtime. The Swift
 helper remains useful for typed provider decoding because its memory disappears when it
 exits.
+
+AppKit retains allocator and rendering caches after the panel closes. The app therefore
+starts a replacement host, waits for any active refresh to finish, and exits the old host.
+The replacement waits for the old process with a kernel event instead of polling, then
+returns to the 13 MB floor at 0.0% idle CPU.
 
 ## Refresh behavior
 
@@ -78,7 +83,10 @@ certificate on every build. Ad-hoc signatures can trigger another prompt.
 
 The panel uses one custom `NSView` with manual drawing and hit testing. It creates no
 Auto Layout graph and no control hierarchy. Closing it releases the panel, event monitors,
-view, and backing surfaces, then asks the allocator to return unused pages.
+view, and backing surfaces, then replaces the host after active refreshes finish.
+
+The host loads ServiceManagement only when the login setting changes. It registers the
+main app directly, then the next host replacement discards the framework's memory.
 
 ## Build
 
@@ -107,10 +115,8 @@ AgentUsageBar (resident Objective-C/AppKit host)
   │    provider files + URLSession + typed Swift decoders
   │    └─ CredentialHelper
   │         one bounded Keychain read, then exits
-  ├─ AgentUsageFetcher -- status-only mode
-  │    status.claude.com + optional notification
-  └─ LoginItemHelper
-       ServiceManagement registration on first launch or setting change
+  └─ AgentUsageFetcher -- status-only mode
+       status.claude.com + optional notification
 ```
 
 The fetcher sends a bounded, versioned tab-separated protocol. The host rejects duplicate
