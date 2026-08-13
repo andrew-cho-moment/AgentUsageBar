@@ -44,6 +44,9 @@ static const CGFloat AUBWidth = 360;
 static const CGFloat AUBMargin = 16;
 static const CGFloat AUBArrowHeight = 10;
 static const CGFloat AUBContentWidth = AUBWidth - 2 * AUBMargin;
+static const CGFloat AUBBodyRadius = 11;
+// Legacy wheels report line counts rather than points.
+static const CGFloat AUBScrollLineHeight = 24;
 
 static NSString *AUBString(const char *text) {
   if (text[0] == '\0')
@@ -226,6 +229,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   uint8_t _actionCount;
   CGFloat _scrollOffset;
   CGFloat _measuredHeight;
+  bool _heightValid;
   bool _showingSettings;
   AUBBudgetEditor _budgetEditor;
   char _budgetInput[24];
@@ -273,40 +277,76 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   return YES;
 }
 
+// The measure pass is offset-independent, so the result only changes when the
+// snapshot or the settings state does.
 - (CGFloat)contentHeight {
-  [self layoutAndDraw:NO];
+  if (!_heightValid)
+    [self layoutAndDraw:NO];
   return _measuredHeight;
 }
 
+- (CGFloat)maximumScrollOffset {
+  return MAX(0, [self contentHeight] - self.bounds.size.height);
+}
+
+// Scrolling by whole device pixels keeps glyph rasterization on the cached
+// path. The offset itself stays unsnapped so sub-pixel deltas still accumulate.
+- (CGFloat)snappedScrollOffset {
+  CGFloat scale = self.window.backingScaleFactor;
+  if (scale <= 0)
+    scale = 1;
+  return round(_scrollOffset * scale) / scale;
+}
+
 - (void)reload {
-  CGFloat maximum = MAX(0, [self contentHeight] - self.bounds.size.height);
-  _scrollOffset = MIN(_scrollOffset, maximum);
+  _heightValid = false;
+  _scrollOffset = MIN(_scrollOffset, [self maximumScrollOffset]);
+  [self setNeedsDisplay:YES];
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+  [super setFrameSize:newSize];
+  if (_snapshot == NULL)
+    return;
+  _scrollOffset = MIN(_scrollOffset, [self maximumScrollOffset]);
   [self setNeedsDisplay:YES];
 }
 
 - (void)drawRect:(NSRect)dirtyRect {
   (void)dirtyRect;
+  [NSColor.clearColor setFill];
+  NSRectFill(self.bounds);
+  NSBezierPath *body = [NSBezierPath
+      bezierPathWithRoundedRect:NSMakeRect(0, AUBArrowHeight, AUBWidth,
+                                           self.bounds.size.height -
+                                               AUBArrowHeight)
+                        xRadius:AUBBodyRadius
+                        yRadius:AUBBodyRadius];
+  [NSColor.windowBackgroundColor setFill];
+  [body fill];
+  NSBezierPath *arrow = [NSBezierPath bezierPath];
+  [arrow moveToPoint:NSMakePoint(AUBWidth / 2 - 10, AUBArrowHeight)];
+  [arrow lineToPoint:NSMakePoint(AUBWidth / 2, 0)];
+  [arrow lineToPoint:NSMakePoint(AUBWidth / 2 + 10, AUBArrowHeight)];
+  [arrow closePath];
+  [arrow fill];
+
+  // Content is laid out in unscrolled coordinates and shifted by the CTM, so
+  // the clip keeps it inside the rounded body instead of over the arrow.
+  [NSGraphicsContext saveGraphicsState];
+  [body addClip];
+  CGContextTranslateCTM(NSGraphicsContext.currentContext.CGContext, 0,
+                        -[self snappedScrollOffset]);
   [self layoutAndDraw:YES];
+  [NSGraphicsContext restoreGraphicsState];
 }
 
+// Delegate getters called from here must stay side-effect free: the measure
+// pass runs them too, and one that called -reload would recurse forever.
 - (void)layoutAndDraw:(bool)draw {
   if (draw)
     _actionCount = 0;
-  if (draw) {
-    [NSColor.clearColor setFill];
-    NSRectFill(self.bounds);
-    [NSColor.windowBackgroundColor setFill];
-    NSRect body = NSMakeRect(0, AUBArrowHeight, AUBWidth,
-                             self.bounds.size.height - AUBArrowHeight);
-    [[NSBezierPath bezierPathWithRoundedRect:body xRadius:11 yRadius:11] fill];
-    NSBezierPath *arrow = [NSBezierPath bezierPath];
-    [arrow moveToPoint:NSMakePoint(AUBWidth / 2 - 10, AUBArrowHeight)];
-    [arrow lineToPoint:NSMakePoint(AUBWidth / 2, 0)];
-    [arrow lineToPoint:NSMakePoint(AUBWidth / 2 + 10, AUBArrowHeight)];
-    [arrow closePath];
-    [arrow fill];
-  }
-  CGFloat y = AUBMargin + AUBArrowHeight - _scrollOffset;
+  CGFloat y = AUBMargin + AUBArrowHeight;
 
   if (draw)
     AUBDrawText(@"Agent Usage", AUBMargin, y, _headline);
@@ -601,7 +641,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     y += 34;
   }
 
-  _measuredHeight = y + AUBMargin + _scrollOffset;
+  _measuredHeight = y + AUBMargin;
+  _heightValid = true;
 }
 
 - (CGFloat)provider:(const AUBProviderState *)provider
@@ -809,6 +850,12 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
 
 - (void)mouseDown:(NSEvent *)event {
   NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
+  if (point.y < AUBArrowHeight)
+    return;
+  // Action rects only exist after a draw, and they live in unscrolled
+  // coordinates, so settle any pending redraw before matching against them.
+  [self displayIfNeeded];
+  point.y += [self snappedScrollOffset];
   for (uint8_t index = 0; index < _actionCount; index++) {
     if (!NSPointInRect(point, _actions[index].rect))
       continue;
@@ -818,8 +865,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       return;
     case AUBActionToggleSettings:
       _showingSettings = !_showingSettings;
-      [_delegate usagePanelViewDidChangeContentHeight:self];
       [self reload];
+      [_delegate usagePanelViewDidChangeContentHeight:self];
       return;
     case AUBActionManageClaude:
       [NSWorkspace.sharedWorkspace
@@ -836,10 +883,13 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       [self reload];
       return;
     }
+    // Enabling the shortcut while ⌘U is taken adds a warning row, so the panel
+    // has to grow with it.
     case AUBActionToggleShortcut: {
       BOOL enabled = ![_delegate usagePanelViewShortcutEnabled:self];
       [_delegate usagePanelView:self setShortcutEnabled:enabled];
       [self reload];
+      [_delegate usagePanelViewDidChangeContentHeight:self];
       return;
     }
     case AUBActionEditClaudeBudget:
@@ -915,8 +965,17 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
 }
 
 - (void)scrollWheel:(NSEvent *)event {
-  CGFloat maximum = MAX(0, [self contentHeight] - self.bounds.size.height);
-  _scrollOffset = MAX(0, MIN(maximum, _scrollOffset + event.scrollingDeltaY));
+  CGFloat delta = event.scrollingDeltaY;
+  if (!event.hasPreciseScrollingDeltas)
+    delta *= AUBScrollLineHeight;
+  // A positive delta means "show earlier content", and a larger offset moves
+  // content up, so the two run opposite each other.
+  CGFloat offset =
+      MAX(0, MIN([self maximumScrollOffset], _scrollOffset - delta));
+  // Skips the redraw for the rest of a momentum phase once pinned at a limit.
+  if (offset == _scrollOffset)
+    return;
+  _scrollOffset = offset;
   [self setNeedsDisplay:YES];
 }
 
