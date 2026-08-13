@@ -57,7 +57,7 @@ int main(int argc, char **argv) {
             AUBFetcherModeUsage, false);
 
   AUBSnapshot snapshot = {0};
-  if (AUBRunFetcher(argv[1], AUBFetcherModeUsage, false, &snapshot)) {
+  if (AUBRunFetcher(argv[1], AUBFetcherModeUsage, &snapshot)) {
     fprintf(stderr, "oversized helper output was accepted\n");
     failures++;
   }

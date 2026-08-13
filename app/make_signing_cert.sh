@@ -6,7 +6,7 @@ set -euo pipefail
 # Why this exists: an ad-hoc signature ("codesign --sign -") identifies each build by its
 # code hash, so a rebuilt binary is a different application to macOS. A stable self-signed
 # certificate gives every build one designated requirement instead. It is NOT a Developer
-# ID and cannot be notarized, distributed, or authorize native notifications.
+# ID and cannot be notarized or distributed.
 #
 # This is not what governs the Keychain prompt. The app reads Claude Code's OAuth token by
 # running /usr/bin/security, which the item's ACL already trusts, so no grant is involved

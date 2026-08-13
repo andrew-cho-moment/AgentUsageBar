@@ -396,8 +396,7 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
   return true;
 }
 
-bool AUBRunFetcher(const char *path, AUBFetcherMode mode, bool notify,
-                   AUBSnapshot *result) {
+bool AUBRunFetcher(const char *path, AUBFetcherMode mode, AUBSnapshot *result) {
   if (path == NULL || result == NULL ||
       (mode != AUBFetcherModeUsage && mode != AUBFetcherModeStatus)) {
     return false;
@@ -446,7 +445,6 @@ bool AUBRunFetcher(const char *path, AUBFetcherMode mode, bool notify,
   char *const arguments[] = {
       (char *)path,
       mode == AUBFetcherModeStatus ? "--status-only" : NULL,
-      mode == AUBFetcherModeStatus && notify ? "--notify" : NULL,
       NULL,
   };
   int spawnStatus =

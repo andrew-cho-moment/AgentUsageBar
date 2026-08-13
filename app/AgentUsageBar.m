@@ -149,13 +149,11 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
   AUBSnapshot _snapshot;
   EventHandlerRef _hotKeyHandler;
   EventHotKeyRef _hotKey;
-  dispatch_source_t _pollTimer;
   CFAbsoluteTime _lastPanelClose;
   bool _usageRefreshing;
   bool _statusRefreshing;
   bool _statusRefreshPending;
   bool _openAtLogin;
-  bool _notificationsEnabled;
   bool _shortcutEnabled;
   bool _shortcutConflict;
   bool _terminating;
@@ -192,10 +190,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     if (_openAtLogin)
       [defaults setBool:YES forKey:@"open_at_login"];
   }
-  _notificationsEnabled =
-      [defaults objectForKey:@"status_notifications_enabled"] == nil
-          ? true
-          : [defaults boolForKey:@"status_notifications_enabled"];
   _shortcutEnabled = [defaults objectForKey:@"shortcut_enabled"] == nil
                          ? true
                          : [defaults boolForKey:@"shortcut_enabled"];
@@ -222,7 +216,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
       sendActionOn:NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp];
   if (_shortcutEnabled)
     [self registerHotKey];
-  [self configurePollTimer];
   if (AUBLoadSnapshot(&_snapshot)) {
     [self render];
   } else {
@@ -251,27 +244,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     UnregisterEventHotKey(_hotKey);
   if (_hotKeyHandler != NULL)
     RemoveEventHandler(_hotKeyHandler);
-  if (_pollTimer != nil)
-    dispatch_source_cancel(_pollTimer);
-}
-
-- (void)configurePollTimer {
-  if (_pollTimer != nil) {
-    dispatch_source_cancel(_pollTimer);
-    _pollTimer = nil;
-  }
-  if (!_notificationsEnabled)
-    return;
-  _pollTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-                                      dispatch_get_main_queue());
-  dispatch_source_set_timer(
-      _pollTimer, dispatch_time(DISPATCH_TIME_NOW, 30 * 60 * NSEC_PER_SEC),
-      30 * 60 * NSEC_PER_SEC, 5 * 60 * NSEC_PER_SEC);
-  __weak AUBAppDelegate *weakSelf = self;
-  dispatch_source_set_event_handler(_pollTimer, ^{
-    [weakSelf refreshStatus];
-  });
-  dispatch_resume(_pollTimer);
 }
 
 - (void)registerHotKey {
@@ -311,7 +283,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
       AUBSnapshot snapshot = {0};
       bool succeeded =
           helper != nil && AUBRunFetcher(helper.fileSystemRepresentation,
-                                         AUBFetcherModeUsage, false, &snapshot);
+                                         AUBFetcherModeUsage, &snapshot);
       dispatch_async(dispatch_get_main_queue(), ^{
         self->_usageRefreshing = false;
         if (succeeded) {
@@ -361,16 +333,15 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     return;
   }
   _statusRefreshing = true;
-  bool notify = _notificationsEnabled;
   uint32_t revision = _statusRevision;
   NSString *helper = [NSBundle.mainBundle.bundlePath
       stringByAppendingPathComponent:@"Contents/Helpers/AgentUsageFetcher"];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
     @autoreleasepool {
       AUBSnapshot snapshot = {0};
-      bool succeeded = helper != nil &&
-                       AUBRunFetcher(helper.fileSystemRepresentation,
-                                     AUBFetcherModeStatus, notify, &snapshot);
+      bool succeeded =
+          helper != nil && AUBRunFetcher(helper.fileSystemRepresentation,
+                                         AUBFetcherModeStatus, &snapshot);
       dispatch_async(dispatch_get_main_queue(), ^{
         self->_statusRefreshing = false;
         if (succeeded && snapshot.hasStatus &&
@@ -596,22 +567,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   } else {
     NSBeep();
   }
-}
-
-- (BOOL)usagePanelViewNotificationsEnabled:(AUBUsagePanelView *)view {
-  (void)view;
-  return _notificationsEnabled;
-}
-
-- (void)usagePanelView:(AUBUsagePanelView *)view
-    setNotificationsEnabled:(BOOL)enabled {
-  (void)view;
-  _notificationsEnabled = enabled;
-  [NSUserDefaults.standardUserDefaults setBool:enabled
-                                        forKey:@"status_notifications_enabled"];
-  [self configurePollTimer];
-  if (enabled)
-    [self refreshStatus];
 }
 
 - (BOOL)usagePanelViewShortcutEnabled:(AUBUsagePanelView *)view {
