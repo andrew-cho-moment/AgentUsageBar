@@ -126,7 +126,6 @@ typedef enum : uint8_t {
 
 bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
                            AUBSnapshot *result);
-bool AUBRunFetcher(const char *path, AUBFetcherMode mode, bool notify,
-                   AUBSnapshot *result);
+bool AUBRunFetcher(const char *path, AUBFetcherMode mode, AUBSnapshot *result);
 
 #endif

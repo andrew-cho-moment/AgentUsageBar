@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
   }
 
   AUBSnapshot snapshot = {0};
-  if (!AUBRunFetcher(argv[1], mode, false, &snapshot)) {
+  if (!AUBRunFetcher(argv[1], mode, &snapshot)) {
     fprintf(stderr, "fetch or protocol parse failed\n");
     return 1;
   }

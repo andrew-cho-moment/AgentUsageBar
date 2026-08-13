@@ -5,13 +5,12 @@ import Foundation
 struct FetcherMain {
     private enum Command {
         case usage
-        case status(notify: Bool)
+        case status
 
         init?(arguments: ArraySlice<String>) {
             switch Array(arguments) {
             case []: self = .usage
-            case ["--status-only"]: self = .status(notify: false)
-            case ["--status-only", "--notify"]: self = .status(notify: true)
+            case ["--status-only"]: self = .status
             default: return nil
             }
         }
@@ -26,9 +25,9 @@ struct FetcherMain {
         guard let command = Command(arguments: CommandLine.arguments.dropFirst()) else {
             exit(2)
         }
-        if case .status(let notify) = command {
+        if case .status = command {
             emit("V", "1")
-            if let status = await StatusFetcher.fetch(notify: notify) {
+            if let status = await StatusFetcher.fetch() {
                 emit(status)
             }
             emit("D", epoch(Date()))

@@ -44,13 +44,13 @@ pid.
 
 The app loads its last validated 8,480-byte snapshot at launch. A normal login launch
 starts no fetch helper, touches no credential, and opens no network connection. A first
-launch with no cache fetches once to seed it. The app performs no periodic usage polling
-while hidden. It refreshes usage when the panel opens with data older than 60 seconds, or
-when the user selects Refresh.
+launch with no cache fetches once to seed it.
 
-Claude outage alerts use a separate status-only helper every 30 minutes when alerts are
-enabled. That helper does not access Keychain or provider usage APIs. Disabling alerts
-removes the timer. Timers use a five-minute tolerance so macOS can coalesce wakeups.
+The app runs no timers at all, so it never wakes on its own. Usage and Claude service
+status both refresh when the panel opens with data older than 60 seconds, and when the
+user selects Refresh. Between those moments the menu bar shows the last fetched values,
+which can be arbitrarily old. Service status arrives from a separate status-only helper
+that touches no credential and no provider usage API.
 
 This design trades short refresh-time process launches and fresh network connections for
 the smallest persistent memory footprint.
@@ -80,7 +80,7 @@ leaves the app with no code that links `Security.framework`.
 - Claude session, weekly, scoped, and monthly-budget usage
 - Codex rate-limit windows, model meters, credit balances, and reported budgets
 - User-supplied monthly limits when a provider reports spend without a limit
-- Per-service Claude status tracking and outage notifications
+- Per-service Claude status tracking
 - System, Dark, and Light appearance modes
 - Global Command-U panel shortcut
 - Start at login by default, with a saved opt-out
@@ -123,7 +123,7 @@ AgentUsageBar (resident Objective-C/AppKit host)
   │    └─ /usr/bin/security
   │         one bounded Keychain read, then exits
   └─ AgentUsageFetcher -- status-only mode
-       status.claude.com + optional notification
+       status.claude.com
 ```
 
 The fetcher sends a bounded, versioned tab-separated protocol. The host rejects duplicate

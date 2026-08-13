@@ -52,7 +52,7 @@ enum StatusFetcher {
         let components: [Component]
     }
 
-    static func fetch(notify: Bool) async -> StatusFetchResult? {
+    static func fetch() async -> StatusFetchResult? {
         var request = URLRequest(
             url: endpoint,
             cachePolicy: .reloadIgnoringLocalCacheData,
@@ -97,25 +97,6 @@ enum StatusFetcher {
             context = "Affects: \(names)\(remainder)"
         }
 
-        if notify {
-            let key = "last_effective_indicator"
-            let stored = defaults.string(forKey: key)
-            let previous = stored.flatMap(StatusFetchIndicator.init(rawValue:))
-            if stored != nil && previous == nil { defaults.removeObject(forKey: key) }
-            if let previous, previous != indicator {
-                let title =
-                    indicator == .none
-                    ? "Claude is back online"
-                    : "Claude status: \(summary.status.description)"
-                let body =
-                    indicator == .none
-                    ? "All systems operational"
-                    : "Open status.claude.com for details"
-                post(title: title, body: body)
-            }
-            defaults.set(indicator.rawValue, forKey: key)
-        }
-
         return StatusFetchResult(
             indicator: indicator,
             description: summary.status.description,
@@ -135,20 +116,4 @@ enum StatusFetcher {
         return String(name[..<range.lowerBound])
     }
 
-    private static func post(title: String, body: String) {
-        let script =
-            "display notification \"\(escaped(body))\" "
-            + "with title \"\(escaped(title))\""
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try? process.run()
-    }
-
-    private static func escaped(_ text: String) -> String {
-        text.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-    }
 }

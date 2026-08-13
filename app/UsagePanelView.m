@@ -13,7 +13,6 @@ typedef NS_ENUM(uint8_t, AUBAction) {
   AUBActionManageClaude,
   AUBActionManageCodex,
   AUBActionToggleLogin,
-  AUBActionToggleNotifications,
   AUBActionToggleShortcut,
   AUBActionEditClaudeBudget,
   AUBActionSetClaudeBudget,
@@ -419,7 +418,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       NSBezierPath *panel = [NSBezierPath
           bezierPathWithRoundedRect:NSMakeRect(
                                         AUBMargin, panelTop, AUBContentWidth,
-                                        282 + (shortcutConflict ? 18 : 0) +
+                                        234 + (shortcutConflict ? 18 : 0) +
                                             budgetSettingsHeight +
                                             24 *
                                                 _snapshot->statusComponentCount)
@@ -436,17 +435,6 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                   y + 17, _caption2);
       [self
           addAction:AUBActionToggleLogin
-               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
-    }
-    y += 48;
-    if (draw) {
-      AUBDrawCheckbox([_delegate usagePanelViewNotificationsEnabled:self],
-                      AUBMargin + 10, y + 1);
-      AUBDrawText(@"Claude Outage Notifications", AUBMargin + 28, y, _caption);
-      AUBDrawText(@"Alert when a tracked Claude service goes down",
-                  AUBMargin + 28, y + 17, _caption2);
-      [self
-          addAction:AUBActionToggleNotifications
                rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
     }
     y += 48;
@@ -550,7 +538,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
     y += 14;
     if (draw) {
-      AUBDrawText(@"Claude status alerts: services to track", AUBMargin + 10, y,
+      AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
                   _caption);
     }
     y += 18;
@@ -845,12 +833,6 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     case AUBActionToggleLogin: {
       BOOL enabled = ![_delegate usagePanelViewOpenAtLogin:self];
       [_delegate usagePanelView:self setOpenAtLogin:enabled];
-      [self reload];
-      return;
-    }
-    case AUBActionToggleNotifications: {
-      BOOL enabled = ![_delegate usagePanelViewNotificationsEnabled:self];
-      [_delegate usagePanelView:self setNotificationsEnabled:enabled];
       [self reload];
       return;
     }
