@@ -5,9 +5,11 @@
 #include "../FetcherProtocol.h"
 
 static int failures = 0;
+static int checks = 0;
 
 static void AUBExpect(const char *name, const char *fixture,
                       AUBFetcherMode mode, bool expected) {
+  checks++;
   char *mutableFixture = strdup(fixture);
   AUBSnapshot snapshot = {0};
   bool actual = AUBParseFetcherOutput(mutableFixture, mode, &snapshot);
@@ -56,14 +58,37 @@ int main(int argc, char **argv) {
             "V\t1\nS\tnone\tOperational\tTracks Claude\t1\nD\t1\n",
             AUBFetcherModeUsage, false);
 
+  const char *both = "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\n"
+                     "S\tnone\tOperational\tTracks Claude\t1\n"
+                     "T\tid\tClaude API\toperational\t1\nD\t1\n";
+  AUBExpect("all", both, AUBFetcherModeAll, true);
+  // A status outage must not discard the usage half that came back fine.
+  AUBExpect("all tolerates missing status",
+            "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\nD\t1\n",
+            AUBFetcherModeAll, true);
+  // Status alone, though, has nothing left to deliver.
+  AUBExpect("status requires status", "V\t1\nD\t1\n", AUBFetcherModeStatus,
+            false);
+  AUBExpect("all missing usage",
+            "V\t1\nS\tnone\tOperational\tTracks Claude\t1\nD\t1\n",
+            AUBFetcherModeAll, false);
+  AUBExpect("usage rejects combined output", both, AUBFetcherModeUsage, false);
+  AUBExpect("status rejects combined output", both, AUBFetcherModeStatus,
+            false);
+  AUBExpect("all rejects a lone provider",
+            "V\t1\nP\tclaude\tsigned_out\t\n"
+            "S\tnone\tOperational\tTracks Claude\t1\nD\t1\n",
+            AUBFetcherModeAll, false);
+
   AUBSnapshot snapshot = {0};
   if (AUBRunFetcher(argv[1], AUBFetcherModeUsage, &snapshot)) {
     fprintf(stderr, "oversized helper output was accepted\n");
     failures++;
   }
+  checks++;
 
   if (failures != 0)
     return 1;
-  printf("10 protocol tests passed\n");
+  printf("%d protocol tests passed\n", checks);
   return 0;
 }

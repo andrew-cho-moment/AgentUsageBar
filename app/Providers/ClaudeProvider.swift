@@ -14,20 +14,6 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// `security` reports `errSecItemNotFound` as exit 44.
     private static let itemNotFoundStatus: Int32 = 44
 
-    /// `~/.claude.json` can grow large, so the plan label is read at most once per launch.
-    private actor PlanLabelCache {
-        private var isLoaded = false
-        private var value: String?
-
-        func resolve(_ compute: @Sendable () -> String?) -> String? {
-            if !isLoaded {
-                value = compute()
-                isLoaded = true
-            }
-            return value
-        }
-    }
-
     private struct KeychainCredentials: Decodable {
         struct OAuth: Decodable {
             let accessToken: String?
@@ -142,8 +128,6 @@ final class ClaudeProvider: UsageProvider, Sendable {
         }
     }
 
-    private let planLabelCache = PlanLabelCache()
-
     /// The Keychain item holds JSON rather than a bare token. Claude Code rewrites the item
     /// on every token refresh with `security add-generic-password -U`, and each rewrite
     /// installs a fresh ACL trusting only `/usr/bin/security`. Reading through that same
@@ -219,7 +203,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
 
         return ProviderSnapshot(
             provider: .claude,
-            planLabel: await planLabelCache.resolve(Self.readPlanLabel),
+            planLabel: Self.readPlanLabel(),
             windows: windows,
             budgetReading: Self.decodeBudget(response),
             creditBalanceMinor: nil,
@@ -356,16 +340,41 @@ final class ClaudeProvider: UsageProvider, Sendable {
     // MARK: Plan label
 
     /// Org name and seat tier live in the CLI's own config, not in the usage response.
-    /// Captures nothing, so it is safe to hand to the cache actor.
-    @Sendable private static func readPlanLabel() -> String? {
+    ///
+    /// The helper exits after one fetch, so an in-process cache would never hit. The
+    /// label is memoized on disk against the config's size and mtime instead: this
+    /// file accumulates per-project history and grows without bound, and re-reading
+    /// plus re-decoding megabytes on every refresh to recover two strings that change
+    /// roughly never is the most expensive thing this provider used to do.
+    private static func readPlanLabel() -> String? {
         let path = (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
         let url = URL(fileURLWithPath: path)
 
-        // This file accumulates project state and can be large; skip rather than
-        // stall the first fetch on a multi-megabyte parse.
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size > 0, size < 20_000_000 else { return nil }
+        let attributes = try? url.resourceValues(forKeys: [
+            .fileSizeKey, .contentModificationDateKey,
+        ])
+        // Skip rather than stall a fetch on a multi-megabyte parse.
+        guard let size = attributes?.fileSize, size > 0, size < 20_000_000,
+            let modified = attributes?.contentModificationDate
+        else { return nil }
 
+        let stamp = "\(size):\(modified.timeIntervalSince1970)"
+        if planLabelDefaults.string(forKey: planLabelStampKey) == stamp {
+            return planLabelDefaults.string(forKey: planLabelKey)
+        }
+
+        let label = parsePlanLabel(url)
+        planLabelDefaults.set(label, forKey: planLabelKey)
+        planLabelDefaults.set(stamp, forKey: planLabelStampKey)
+        return label
+    }
+
+    private static let planLabelDefaults = UserDefaults(
+        suiteName: "com.andrewcho.agentusagebar")!
+    private static let planLabelKey = "claude_plan_label"
+    private static let planLabelStampKey = "claude_plan_label_stamp"
+
+    private static func parsePlanLabel(_ url: URL) -> String? {
         guard let data = try? Data(contentsOf: url),
             let account = try? JSONDecoder().decode(ClaudeConfig.self, from: data).oauthAccount
         else { return nil }

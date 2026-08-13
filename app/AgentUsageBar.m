@@ -84,10 +84,8 @@ static bool AUBAppendText(char *destination, size_t capacity,
 static bool AUBAppendProviderHeadline(char *title, size_t capacity,
                                       const AUBProviderState *provider,
                                       const char *mark) {
-  if (provider->status == AUBProviderStatusSignedOut ||
-      provider->status == AUBProviderStatusPending) {
+  if (!AUBProviderVisible(provider))
     return true;
-  }
 
   char group[96] = {0};
   int count = snprintf(group, sizeof(group), "%s ", mark);
@@ -97,8 +95,8 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
     if (!AUBAppendText(group, sizeof(group), "?"))
       return false;
   } else {
-    const AUBWindow *session = AUBHeadlineWindow(provider, "session");
-    const AUBWindow *weekly = AUBHeadlineWindow(provider, "weekly");
+    const AUBWindow *session = AUBHeadlineWindow(provider, AUBWindowIDSession);
+    const AUBWindow *weekly = AUBHeadlineWindow(provider, AUBWindowIDWeekly);
     if (session == NULL && weekly == NULL) {
       if (!AUBAppendText(group, sizeof(group), "…"))
         return false;
@@ -182,14 +180,8 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   (void)notification;
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-  id openAtLogin = [defaults objectForKey:@"open_at_login"];
-  if (openAtLogin != nil) {
-    _openAtLogin = [defaults boolForKey:@"open_at_login"];
-  } else {
-    _openAtLogin = AUBSetLoginItem(true);
-    if (_openAtLogin)
-      [defaults setBool:YES forKey:@"open_at_login"];
-  }
+  bool registerLoginItem = [defaults objectForKey:@"open_at_login"] == nil;
+  _openAtLogin = !registerLoginItem && [defaults boolForKey:@"open_at_login"];
   _shortcutEnabled = [defaults objectForKey:@"shortcut_enabled"] == nil
                          ? true
                          : [defaults boolForKey:@"shortcut_enabled"];
@@ -220,6 +212,23 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     [self render];
   } else {
     [self refresh];
+  }
+
+  // First launch only. Registering with launchd is a synchronous XPC
+  // round-trip, so it runs after the status item exists and off the main
+  // thread. The outcome is recorded either way: writing the key only on success
+  // is what made a failed registration pay the dlopen and the round-trip again
+  // on every later launch.
+  if (registerLoginItem) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+      bool enabled = AUBSetLoginItem(true);
+      dispatch_async(dispatch_get_main_queue(), ^{
+        self->_openAtLogin = enabled;
+        [NSUserDefaults.standardUserDefaults setBool:enabled
+                                              forKey:@"open_at_login"];
+        [self->_usagePanelView reload];
+      });
+    });
   }
 }
 
@@ -268,71 +277,36 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 }
 
 - (void)refresh {
-  [self refreshUsage];
-  [self refreshStatus];
+  [self refreshUsage:true status:true];
 }
 
 - (void)refreshUsage {
-  if (_usageRefreshing)
-    return;
-  _usageRefreshing = true;
-  NSString *helper = [NSBundle.mainBundle.bundlePath
-      stringByAppendingPathComponent:@"Contents/Helpers/AgentUsageFetcher"];
-  dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-    @autoreleasepool {
-      AUBSnapshot snapshot = {0};
-      bool succeeded =
-          helper != nil && AUBRunFetcher(helper.fileSystemRepresentation,
-                                         AUBFetcherModeUsage, &snapshot);
-      dispatch_async(dispatch_get_main_queue(), ^{
-        self->_usageRefreshing = false;
-        if (succeeded) {
-          self->_snapshot.valid = snapshot.valid;
-          self->_snapshot.fetchedAt = snapshot.fetchedAt;
-          self->_snapshot.claude = snapshot.claude;
-          self->_snapshot.codex = snapshot.codex;
-          [self applyBudgetOverrides];
-          AUBSaveSnapshot(&self->_snapshot);
-          [self render];
-          [self->_usagePanelView reload];
-          [self updatePanelSize];
-        } else {
-          self->_statusItem.button.title = @"!";
-          self->_statusItem.button.toolTip = @"Usage refresh failed";
-        }
-      });
-    }
-  });
-}
-
-- (void)applyBudgetOverrides {
-  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-  AUBProviderState *providers[] = {&_snapshot.claude, &_snapshot.codex};
-  NSString *keys[] = {@"budget_override_minor_claude",
-                      @"budget_override_minor_codex"};
-  for (uint8_t index = 0; index < 2; index++) {
-    AUBProviderState *provider = providers[index];
-    if (!provider->budget.present || provider->budget.hasLimit)
-      continue;
-    id value = [defaults objectForKey:keys[index]];
-    if (value == nil)
-      continue;
-    if (![value isKindOfClass:NSNumber.class] || [value longLongValue] <= 0) {
-      [defaults removeObjectForKey:keys[index]];
-      continue;
-    }
-    provider->budget.limitMinor = [value longLongValue];
-    provider->budget.hasLimit = true;
-    provider->budget.overridden = true;
-  }
+  [self refreshUsage:true status:false];
 }
 
 - (void)refreshStatus {
-  if (_statusRefreshing) {
+  [self refreshUsage:false status:true];
+}
+
+/// Fetches the requested halves in a single helper run. Each half costs a full
+/// dyld load of Foundation and CFNetwork in the helper, so asking one process
+/// for both is worth more than any saving inside the app.
+- (void)refreshUsage:(bool)wantsUsage status:(bool)wantsStatus {
+  if (wantsUsage && _usageRefreshing)
+    wantsUsage = false;
+  if (wantsStatus && _statusRefreshing) {
     _statusRefreshPending = true;
-    return;
+    wantsStatus = false;
   }
-  _statusRefreshing = true;
+  if (!wantsUsage && !wantsStatus)
+    return;
+  _usageRefreshing = _usageRefreshing || wantsUsage;
+  _statusRefreshing = _statusRefreshing || wantsStatus;
+
+  AUBFetcherMode mode =
+      wantsUsage ? (wantsStatus ? AUBFetcherModeAll : AUBFetcherModeUsage)
+                 : AUBFetcherModeStatus;
+
   uint32_t revision = _statusRevision;
   NSString *helper = [NSBundle.mainBundle.bundlePath
       stringByAppendingPathComponent:@"Contents/Helpers/AgentUsageFetcher"];
@@ -340,33 +314,100 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     @autoreleasepool {
       AUBSnapshot snapshot = {0};
       bool succeeded =
-          helper != nil && AUBRunFetcher(helper.fileSystemRepresentation,
-                                         AUBFetcherModeStatus, &snapshot);
+          AUBRunFetcher(helper.fileSystemRepresentation, mode, &snapshot);
       dispatch_async(dispatch_get_main_queue(), ^{
-        self->_statusRefreshing = false;
-        if (succeeded && snapshot.hasStatus &&
-            revision == self->_statusRevision) {
-          self->_snapshot.hasStatus = true;
-          self->_snapshot.statusIndicator = snapshot.statusIndicator;
-          self->_snapshot.statusFetchedAt = snapshot.statusFetchedAt;
-          memcpy(self->_snapshot.statusDescription, snapshot.statusDescription,
-                 sizeof(self->_snapshot.statusDescription));
-          memcpy(self->_snapshot.statusContext, snapshot.statusContext,
-                 sizeof(self->_snapshot.statusContext));
-          memcpy(self->_snapshot.statusComponents, snapshot.statusComponents,
-                 sizeof(self->_snapshot.statusComponents));
-          self->_snapshot.statusComponentCount = snapshot.statusComponentCount;
-          AUBSaveSnapshot(&self->_snapshot);
-          [self->_usagePanelView reload];
-          [self updatePanelSize];
-        }
-        if (self->_statusRefreshPending) {
-          self->_statusRefreshPending = false;
-          [self refreshStatus];
-        }
+        [self merge:&snapshot mode:mode succeeded:succeeded revision:revision];
       });
     }
   });
+}
+
+- (void)merge:(const AUBSnapshot *)fetched
+         mode:(AUBFetcherMode)mode
+    succeeded:(bool)succeeded
+     revision:(uint32_t)revision {
+  bool wantedUsage = AUBFetcherModeWantsUsage(mode);
+  bool wantedStatus = AUBFetcherModeWantsStatus(mode);
+  if (wantedUsage)
+    _usageRefreshing = false;
+  if (wantedStatus)
+    _statusRefreshing = false;
+
+  bool merged = false;
+  if (succeeded && wantedUsage) {
+    _snapshot.valid = fetched->valid;
+    _snapshot.fetchedAt = fetched->fetchedAt;
+    _snapshot.claude = fetched->claude;
+    _snapshot.codex = fetched->codex;
+    [self applyBudgetOverrides];
+    [self render];
+    merged = true;
+  }
+  // A tracking change while this fetch was in flight makes its status half
+  // stale.
+  if (succeeded && wantedStatus && fetched->hasStatus &&
+      revision == _statusRevision) {
+    _snapshot.hasStatus = true;
+    _snapshot.statusIndicator = fetched->statusIndicator;
+    _snapshot.statusFetchedAt = fetched->statusFetchedAt;
+    memcpy(_snapshot.statusDescription, fetched->statusDescription,
+           sizeof(_snapshot.statusDescription));
+    memcpy(_snapshot.statusContext, fetched->statusContext,
+           sizeof(_snapshot.statusContext));
+    memcpy(_snapshot.statusComponents, fetched->statusComponents,
+           sizeof(_snapshot.statusComponents));
+    _snapshot.statusComponentCount = fetched->statusComponentCount;
+    merged = true;
+  }
+
+  if (merged) {
+    AUBSaveSnapshot(&_snapshot);
+    [_usagePanelView reload];
+    [self updatePanelSize];
+  } else if (!succeeded && wantedUsage) {
+    _statusItem.button.title = @"!";
+    _statusItem.button.toolTip = @"Usage refresh failed";
+  }
+
+  if (wantedStatus && _statusRefreshPending) {
+    _statusRefreshPending = false;
+    [self refreshUsage:false status:true];
+  }
+}
+
+static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
+  return kind == AUBProviderKindClaude ? @"budget_override_minor_claude"
+                                       : @"budget_override_minor_codex";
+}
+
+- (AUBProviderState *)stateForKind:(AUBProviderKind)kind {
+  return kind == AUBProviderKindClaude ? &_snapshot.claude : &_snapshot.codex;
+}
+
+- (void)applyBudgetOverrides {
+  NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+  for (AUBProviderKind kind = AUBProviderKindClaude;
+       kind <= AUBProviderKindCodex; kind++) {
+    AUBProviderState *provider = [self stateForKind:kind];
+    if (!provider->budget.present)
+      continue;
+    NSString *key = AUBBudgetOverrideKey(kind);
+    id value = [defaults objectForKey:key];
+    if (value == nil)
+      continue;
+    // Drop the stored override once it is unusable — either malformed, or made
+    // redundant by the provider reporting its own limit. Keeping it would let a
+    // months-old number reappear unannounced the next time the provider stops
+    // reporting one.
+    if (![value isKindOfClass:NSNumber.class] || [value longLongValue] <= 0 ||
+        provider->budget.hasLimit) {
+      [defaults removeObjectForKey:key];
+      continue;
+    }
+    provider->budget.limitMinor = [value longLongValue];
+    provider->budget.hasLimit = true;
+    provider->budget.overridden = true;
+  }
 }
 
 - (void)render {
@@ -462,10 +503,11 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
                                    }];
 
   double now = CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970;
-  if (!_snapshot.valid || now - _snapshot.fetchedAt > 60)
-    [self refreshUsage];
-  if (!_snapshot.hasStatus || now - _snapshot.statusFetchedAt > 60)
-    [self refreshStatus];
+  bool usageStale = !_snapshot.valid || now - _snapshot.fetchedAt > 60;
+  bool statusStale =
+      !_snapshot.hasStatus || now - _snapshot.statusFetchedAt > 60;
+  if (usageStale || statusStale)
+    [self refreshUsage:usageStale status:statusStale];
 }
 
 - (void)updatePanelSize {
@@ -665,24 +707,15 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     setBudgetOverrideMinor:(int64_t)minor
                forProvider:(AUBProviderKind)providerKind {
   (void)view;
-  NSString *key = nil;
-  AUBProviderState *provider = NULL;
-  switch (providerKind) {
-  case AUBProviderKindClaude:
-    key = @"budget_override_minor_claude";
-    provider = &_snapshot.claude;
-    break;
-  case AUBProviderKindCodex:
-    key = @"budget_override_minor_codex";
-    provider = &_snapshot.codex;
-    break;
-  }
+  AUBProviderState *provider = [self stateForKind:providerKind];
   if (minor <= 0 || !provider->budget.present ||
       (provider->budget.hasLimit && !provider->budget.overridden)) {
     NSBeep();
     return;
   }
-  [NSUserDefaults.standardUserDefaults setObject:@(minor) forKey:key];
+  [NSUserDefaults.standardUserDefaults
+      setObject:@(minor)
+         forKey:AUBBudgetOverrideKey(providerKind)];
   provider->budget.limitMinor = minor;
   provider->budget.hasLimit = true;
   provider->budget.overridden = true;
@@ -694,19 +727,9 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 - (void)usagePanelView:(AUBUsagePanelView *)view
     clearBudgetOverrideForProvider:(AUBProviderKind)providerKind {
   (void)view;
-  NSString *key = nil;
-  AUBProviderState *provider = NULL;
-  switch (providerKind) {
-  case AUBProviderKindClaude:
-    key = @"budget_override_minor_claude";
-    provider = &_snapshot.claude;
-    break;
-  case AUBProviderKindCodex:
-    key = @"budget_override_minor_codex";
-    provider = &_snapshot.codex;
-    break;
-  }
-  [NSUserDefaults.standardUserDefaults removeObjectForKey:key];
+  AUBProviderState *provider = [self stateForKind:providerKind];
+  [NSUserDefaults.standardUserDefaults
+      removeObjectForKey:AUBBudgetOverrideKey(providerKind)];
   if (provider->budget.overridden) {
     provider->budget.overridden = false;
     provider->budget.hasLimit = false;

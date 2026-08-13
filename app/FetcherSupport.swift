@@ -33,7 +33,15 @@ struct APINumber: Decodable, Sendable {
             debugDescription: "Expected a finite number or decimal string")
     }
 
-    var roundedInt: Int { Int(value.rounded()) }
+    /// Absent rather than trapping when the value is finite but outside `Int`'s
+    /// range: every money and limit field in both providers flows through here, so
+    /// one absurd number from an upstream endpoint would otherwise kill the helper
+    /// and surface only as "Usage refresh failed".
+    var roundedInt: Int? {
+        let rounded = value.rounded()
+        guard rounded.magnitude < 9e15 else { return nil }
+        return Int(rounded)
+    }
 }
 
 struct APIBool: Decodable, Sendable {
@@ -72,8 +80,19 @@ enum DateParse {
 }
 
 enum Fmt {
+    /// Windows shorter than this are the rolling session meter; anything longer is
+    /// the weekly cap. Both the id and the label derive from this one boundary, so
+    /// a window can never come out labelled "Session" while carrying the weekly id.
+    static let sessionMaximumSeconds: Double = 21_600
+
+    static func windowID(seconds: Double) -> String {
+        seconds > 0 && seconds < sessionMaximumSeconds ? WindowID.session : WindowID.weekly
+    }
+
     static func windowLabel(seconds: Double) -> String {
-        if seconds < 21_600 { return "Session (\(Int((seconds / 3600).rounded())) hour)" }
+        if seconds < sessionMaximumSeconds {
+            return "Session (\(Int((seconds / 3600).rounded())) hour)"
+        }
         if seconds < 172_800 { return "Daily (24 hour)" }
         if seconds < 1_209_600 { return "Weekly (7 day)" }
         return "Limit (\(Int((seconds / 86_400).rounded())) day)"

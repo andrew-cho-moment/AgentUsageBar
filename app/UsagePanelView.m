@@ -7,29 +7,20 @@
 #include <string.h>
 #include <time.h>
 
+/// Actions marked below carry their target in `AUBActionRect.argument`, so
+/// adding a provider or an appearance option does not add enum cases or
+/// `mouseDown:` branches.
 typedef NS_ENUM(uint8_t, AUBAction) {
   AUBActionRefresh,
   AUBActionToggleSettings,
-  AUBActionManageClaude,
-  AUBActionManageCodex,
   AUBActionToggleLogin,
   AUBActionToggleShortcut,
-  AUBActionEditClaudeBudget,
-  AUBActionSetClaudeBudget,
-  AUBActionClearClaudeBudget,
-  AUBActionEditCodexBudget,
-  AUBActionSetCodexBudget,
-  AUBActionClearCodexBudget,
-  AUBActionToggleStatusComponent,
-  AUBActionAppearanceSystem,
-  AUBActionAppearanceDark,
-  AUBActionAppearanceLight,
-};
-
-typedef NS_ENUM(uint8_t, AUBBudgetEditor) {
-  AUBBudgetEditorClosed,
-  AUBBudgetEditorClaude,
-  AUBBudgetEditorCodex,
+  AUBActionToggleStatusComponent, // argument: component index
+  AUBActionManageProvider,        // argument: AUBProviderKind
+  AUBActionEditBudget,            // argument: AUBProviderKind
+  AUBActionSetBudget,             // argument: AUBProviderKind
+  AUBActionClearBudget,           // argument: AUBProviderKind
+  AUBActionAppearance,            // argument: AUBAppearanceMode
 };
 
 typedef struct {
@@ -38,7 +29,10 @@ typedef struct {
   uint8_t argument;
 } AUBActionRect;
 
-enum { AUBMaxActions = 32 };
+/// Headroom over the worst case (refresh, settings, 3 toggles, 2 manage links,
+/// 6 budget controls, 3 appearance segments, one row per status component) so
+/// that adding a control cannot silently push the last row past the limit.
+enum { AUBMaxActions = AUBMaxStatusComponents + 24 };
 
 static const CGFloat AUBWidth = 360;
 static const CGFloat AUBMargin = 16;
@@ -82,6 +76,19 @@ static void AUBDrawRight(NSString *text, CGFloat right, CGFloat y,
   [text drawAtPoint:NSMakePoint(right - width, y) withAttributes:attributes];
 }
 
+/// Built once rather than per checkbox: up to nineteen are drawn per pass. Safe
+/// to cache because `whiteColor` is a fixed color, unlike the accent and label
+/// colors below it, which must resolve against the live appearance on every
+/// draw.
+static NSDictionary<NSAttributedStringKey, id> *AUBCheckAttributes(void) {
+  static NSDictionary<NSAttributedStringKey, id> *attributes;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    attributes = AUBAttributes(9, NSFontWeightSemibold, NSColor.whiteColor);
+  });
+  return attributes;
+}
+
 static void AUBDrawCheckbox(bool enabled, CGFloat x, CGFloat y) {
   NSRect box = NSMakeRect(x, y, 12, 12);
   [NSColor.tertiaryLabelColor setStroke];
@@ -90,9 +97,22 @@ static void AUBDrawCheckbox(bool enabled, CGFloat x, CGFloat y) {
     return;
   [NSColor.controlAccentColor setFill];
   [[NSBezierPath bezierPathWithRoundedRect:box xRadius:2 yRadius:2] fill];
-  NSDictionary *check =
-      AUBAttributes(9, NSFontWeightSemibold, NSColor.whiteColor);
-  AUBDrawText(@"✓", x + 2, y - 1, check);
+  AUBDrawText(@"✓", x + 2, y - 1, AUBCheckAttributes());
+}
+
+static NSString *AUBProviderName(AUBProviderKind kind) {
+  return kind == AUBProviderKindClaude ? @"Claude" : @"Codex";
+}
+
+static NSString *AUBManageURL(AUBProviderKind kind) {
+  return kind == AUBProviderKindClaude
+             ? @"https://claude.ai/settings/usage"
+             : @"https://chatgpt.com/codex/settings/usage";
+}
+
+static const AUBProviderState *AUBStateForKind(const AUBSnapshot *snapshot,
+                                               AUBProviderKind kind) {
+  return kind == AUBProviderKindClaude ? &snapshot->claude : &snapshot->codex;
 }
 
 static NSString *AUBComponentStatusLabel(AUBComponentStatus status) {
@@ -145,28 +165,26 @@ AUBDrawWrapped(NSString *text, NSRect rect,
   return height;
 }
 
-static NSString *AUBResetText(const AUBWindow *window) {
-  if (!window->hasReset)
-    return @"";
-  time_t seconds = (time_t)window->resetsAt;
-  struct tm local = {0};
-  localtime_r(&seconds, &local);
-  char buffer[64];
-  if (strcmp(window->id, "session") == 0) {
-    strftime(buffer, sizeof(buffer), "Resets at %-I:%M %p", &local);
-  } else {
-    strftime(buffer, sizeof(buffer), "Resets on %-d %b at %-I:%M %p", &local);
-  }
-  return AUBString(buffer);
-}
-
-static NSString *AUBUpdatedText(double epoch) {
+static NSString *AUBFormatEpoch(double epoch, const char *format) {
   time_t seconds = (time_t)epoch;
   struct tm local = {0};
   localtime_r(&seconds, &local);
   char buffer[64];
-  strftime(buffer, sizeof(buffer), "Last updated: %-I:%M %p", &local);
+  strftime(buffer, sizeof(buffer), format, &local);
   return AUBString(buffer);
+}
+
+static NSString *AUBResetText(const AUBWindow *window) {
+  if (!window->hasReset)
+    return @"";
+  return AUBFormatEpoch(window->resetsAt,
+                        strcmp(window->id, AUBWindowIDSession) == 0
+                            ? "Resets at %-I:%M %p"
+                            : "Resets on %-d %b at %-I:%M %p");
+}
+
+static NSString *AUBUpdatedText(double epoch) {
+  return AUBFormatEpoch(epoch, "Last updated: %-I:%M %p");
 }
 
 static NSString *AUBGroupedInteger(int64_t value) {
@@ -190,11 +208,8 @@ static NSString *AUBGroupedInteger(int64_t value) {
 }
 
 static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
-  int64_t scale = 1;
-  for (uint8_t index = 0; index < budget->exponent; index++)
-    scale *= 10;
+  int64_t scale = AUBScale(budget->exponent);
   int64_t whole = minor / scale;
-  int64_t fraction = llabs(minor % scale);
 
   if (budget->unit == AUBBudgetUnitCredits) {
     return [NSString stringWithFormat:@"%@ credits", AUBGroupedInteger(whole)];
@@ -219,7 +234,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   }
   return [NSString stringWithFormat:@"%@%@.%0*lld", prefix,
                                     AUBGroupedInteger(whole), budget->exponent,
-                                    fraction];
+                                    llabs(minor % scale)];
 }
 
 @interface AUBUsagePanelView () {
@@ -231,7 +246,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   CGFloat _measuredHeight;
   bool _heightValid;
   bool _showingSettings;
-  AUBBudgetEditor _budgetEditor;
+  bool _editingBudget;
+  AUBProviderKind _budgetEditorKind;
   char _budgetInput[24];
   NSDictionary<NSAttributedStringKey, id> *_headline;
   NSDictionary<NSAttributedStringKey, id> *_subheadline;
@@ -240,6 +256,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   NSDictionary<NSAttributedStringKey, id> *_caption2;
   NSDictionary<NSAttributedStringKey, id> *_warning;
   NSDictionary<NSAttributedStringKey, id> *_warning2;
+  NSDictionary<NSAttributedStringKey, id> *_segment;
+  NSDictionary<NSAttributedStringKey, id> *_segmentSelected;
 }
 @end
 
@@ -265,6 +283,10 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                              NSColor.systemOrangeColor);
     _warning2 = AUBAttributes(NSFont.smallSystemFontSize - 1,
                               NSFontWeightRegular, NSColor.systemOrangeColor);
+    _segment = AUBAttributes(NSFont.smallSystemFontSize - 1,
+                             NSFontWeightRegular, NSColor.labelColor);
+    _segmentSelected = AUBAttributes(NSFont.smallSystemFontSize - 1,
+                                     NSFontWeightRegular, NSColor.whiteColor);
   }
   return self;
 }
@@ -352,11 +374,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     AUBDrawText(@"Agent Usage", AUBMargin, y, _headline);
   y += 32;
 
-  bool hasProvider = _snapshot->claude.status != AUBProviderStatusSignedOut &&
-                     _snapshot->claude.status != AUBProviderStatusPending;
-  hasProvider =
-      hasProvider || (_snapshot->codex.status != AUBProviderStatusSignedOut &&
-                      _snapshot->codex.status != AUBProviderStatusPending);
+  bool hasProvider = AUBProviderVisible(&_snapshot->claude) ||
+                     AUBProviderVisible(&_snapshot->codex);
 
   if (!hasProvider) {
     if (draw)
@@ -372,20 +391,10 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                   _caption);
     y += 18;
   } else {
-    y = [self provider:&_snapshot->claude
-                      name:@"Claude"
-                         y:y
-                      draw:draw
-           titleAttributes:_subheadlineBold
-         captionAttributes:_caption
-        caption2Attributes:_caption2];
-    y = [self provider:&_snapshot->codex
-                      name:@"Codex"
-                         y:y
-                      draw:draw
-           titleAttributes:_subheadlineBold
-         captionAttributes:_caption
-        caption2Attributes:_caption2];
+    for (AUBProviderKind kind = AUBProviderKindClaude;
+         kind <= AUBProviderKindCodex; kind++) {
+      y = [self provider:kind y:y draw:draw];
+    }
   }
 
   if (_snapshot->hasStatus) {
@@ -448,221 +457,194 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y += 24;
 
   if (_showingSettings) {
-    CGFloat panelTop = y;
-    uint8_t budgetCandidateCount = AUBBudgetCandidateCount(_snapshot);
-    bool shortcutConflict = [_delegate usagePanelViewShortcutConflicted:self];
-    CGFloat budgetSettingsHeight =
-        34 + (budgetCandidateCount == 0 ? 20 : 34 * budgetCandidateCount);
+    // Measure the block to size its background, so the two cannot disagree. The
+    // background has to be filled before the rows draw over it, which is why
+    // this is the one place a second pass is unavoidable.
     if (draw) {
+      CGFloat height = [self settingsAtY:y draw:NO] - y;
       [[NSColor.secondaryLabelColor colorWithAlphaComponent:0.08] setFill];
-      NSBezierPath *panel = [NSBezierPath
-          bezierPathWithRoundedRect:NSMakeRect(
-                                        AUBMargin, panelTop, AUBContentWidth,
-                                        234 + (shortcutConflict ? 18 : 0) +
-                                            budgetSettingsHeight +
-                                            24 *
-                                                _snapshot->statusComponentCount)
+      [[NSBezierPath
+          bezierPathWithRoundedRect:NSMakeRect(AUBMargin, y, AUBContentWidth,
+                                               height)
                             xRadius:6
-                            yRadius:6];
-      [panel fill];
+                            yRadius:6] fill];
     }
-    y += 10;
-    if (draw) {
-      AUBDrawCheckbox([_delegate usagePanelViewOpenAtLogin:self],
-                      AUBMargin + 10, y + 1);
-      AUBDrawText(@"Open at Login", AUBMargin + 28, y, _caption);
-      AUBDrawText(@"Launch automatically when you log in", AUBMargin + 28,
-                  y + 17, _caption2);
-      [self
-          addAction:AUBActionToggleLogin
-               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
-    }
-    y += 48;
-    if (draw) {
-      AUBDrawCheckbox([_delegate usagePanelViewShortcutEnabled:self],
-                      AUBMargin + 10, y + 1);
-      AUBDrawText(@"Keyboard Shortcut (⌘U)", AUBMargin + 28, y, _caption);
-      AUBDrawText(@"Toggle this popup from anywhere", AUBMargin + 28, y + 17,
-                  _caption2);
-      [self
-          addAction:AUBActionToggleShortcut
-               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
-    }
-    y += 42;
-    if (shortcutConflict) {
-      if (draw) {
-        AUBDrawText(@"⌘U is already in use, so the shortcut is inactive.",
-                    AUBMargin + 28, y, _warning2);
-      }
-      y += 18;
-    }
-
-    if (draw) {
-      [NSColor.separatorColor setFill];
-      NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-    }
-    y += 14;
-    if (draw)
-      AUBDrawText(@"Monthly budget", AUBMargin + 10, y, _caption);
-    y += 20;
-    if (budgetCandidateCount == 0) {
-      if (draw) {
-        AUBDrawText(@"Both providers report their own limits.", AUBMargin + 10,
-                    y, _caption2);
-      }
-      y += 20;
-    } else {
-      const AUBProviderState *providers[] = {&_snapshot->claude,
-                                             &_snapshot->codex};
-      NSString *names[] = {@"Claude", @"Codex"};
-      const AUBBudgetEditor editors[] = {
-          AUBBudgetEditorClaude,
-          AUBBudgetEditorCodex,
-      };
-      const AUBAction editActions[] = {
-          AUBActionEditClaudeBudget,
-          AUBActionEditCodexBudget,
-      };
-      const AUBAction setActions[] = {
-          AUBActionSetClaudeBudget,
-          AUBActionSetCodexBudget,
-      };
-      const AUBAction clearActions[] = {
-          AUBActionClearClaudeBudget,
-          AUBActionClearCodexBudget,
-      };
-      for (uint8_t index = 0; index < 2; index++) {
-        const AUBProviderState *provider = providers[index];
-        if (!AUBCanOverrideBudget(provider))
-          continue;
-        NSRect field = NSMakeRect(AUBMargin + 70, y - 3, 96, 22);
-        if (draw) {
-          AUBDrawText(names[index], AUBMargin + 10, y, _caption2);
-          NSColor *border = _budgetEditor == editors[index]
-                                ? NSColor.controlAccentColor
-                                : NSColor.tertiaryLabelColor;
-          [border setStroke];
-          [[NSBezierPath bezierPathWithRoundedRect:field xRadius:4
-                                           yRadius:4] stroke];
-          NSString *input = @"";
-          if (_budgetEditor == editors[index]) {
-            input = AUBString(_budgetInput);
-          } else if (provider->budget.overridden) {
-            double value = (double)provider->budget.limitMinor /
-                           (double)AUBScale(provider->budget.exponent);
-            input = [NSString
-                stringWithFormat:@"%.*f", provider->budget.exponent, value];
-          }
-          NSDictionary *inputAttributes =
-              input.length == 0 ? _caption2 : _caption;
-          AUBDrawText(input.length == 0 ? @"e.g. 1000" : input,
-                      NSMinX(field) + 6, y, inputAttributes);
-          [self addAction:editActions[index] rect:field];
-
-          NSRect set = NSMakeRect(NSMaxX(field) + 8, y - 3, 34, 22);
-          AUBDrawText(@"Set", NSMinX(set) + 6, y, _caption);
-          [self addAction:setActions[index] rect:set];
-          if (provider->budget.overridden) {
-            NSRect clear = NSMakeRect(NSMaxX(set) + 6, y - 3, 44, 22);
-            AUBDrawText(@"Clear", NSMinX(clear) + 4, y, _caption);
-            [self addAction:clearActions[index] rect:clear];
-          }
-        }
-        y += 34;
-      }
-    }
-
-    if (draw) {
-      [NSColor.separatorColor setFill];
-      NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-    }
-    y += 14;
-    if (draw) {
-      AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
-                  _caption);
-    }
-    y += 18;
-    if (draw) {
-      AUBDrawText(@"At least one service must remain selected.", AUBMargin + 10,
-                  y, _caption2);
-    }
-    y += 24;
-    for (uint8_t index = 0; index < _snapshot->statusComponentCount; index++) {
-      const AUBStatusComponent *component = &_snapshot->statusComponents[index];
-      if (draw) {
-        AUBDrawCheckbox(component->tracked, AUBMargin + 10, y + 1);
-        AUBDrawText(AUBString(component->name), AUBMargin + 28, y, _caption2);
-        AUBDrawRight(AUBComponentStatusLabel(component->status),
-                     AUBWidth - AUBMargin - 10, y, _caption2);
-        [self addAction:AUBActionToggleStatusComponent
-               argument:index
-                   rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12,
-                                   22)];
-      }
-      y += 24;
-    }
-
-    if (draw) {
-      [NSColor.separatorColor setFill];
-      NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-    }
-    y += 14;
-    if (draw)
-      AUBDrawText(@"Appearance", AUBMargin + 10, y, _caption);
-    y += 22;
-    CGFloat segmentWidth = (AUBContentWidth - 20) / 3;
-    AUBAppearanceMode selected = [_delegate usagePanelViewAppearanceMode:self];
-    NSString *const labels[] = {@"System", @"Dark", @"Light"};
-    const AUBAction actions[] = {
-        AUBActionAppearanceSystem,
-        AUBActionAppearanceDark,
-        AUBActionAppearanceLight,
-    };
-    for (uint8_t index = 0; index < 3; index++) {
-      NSRect segment = NSMakeRect(AUBMargin + 10 + segmentWidth * index, y,
-                                  segmentWidth, 24);
-      if (draw) {
-        NSColor *fill = selected == index
-                            ? NSColor.controlAccentColor
-                            : [NSColor.labelColor colorWithAlphaComponent:0.08];
-        [fill setFill];
-        [[NSBezierPath bezierPathWithRoundedRect:segment xRadius:4
-                                         yRadius:4] fill];
-        NSDictionary *attributes = AUBAttributes(
-            NSFont.smallSystemFontSize - 1, NSFontWeightRegular,
-            selected == index ? NSColor.whiteColor : NSColor.labelColor);
-        NSString *label = labels[index];
-        NSSize size = [label sizeWithAttributes:attributes];
-        AUBDrawText(label, NSMidX(segment) - size.width / 2,
-                    NSMidY(segment) - size.height / 2, attributes);
-        [self addAction:actions[index] rect:segment];
-      }
-    }
-    y += 34;
+    y = [self settingsAtY:y draw:draw];
   }
 
   _measuredHeight = y + AUBMargin;
   _heightValid = true;
 }
 
-- (CGFloat)provider:(const AUBProviderState *)provider
-                  name:(NSString *)name
-                     y:(CGFloat)y
-                  draw:(bool)draw
-       titleAttributes:(NSDictionary *)titleAttributes
-     captionAttributes:(NSDictionary *)captionAttributes
-    caption2Attributes:(NSDictionary *)caption2Attributes {
-  if (provider->status == AUBProviderStatusSignedOut ||
-      provider->status == AUBProviderStatusPending) {
-    return y;
+- (CGFloat)settingsAtY:(CGFloat)y draw:(bool)draw {
+  uint8_t budgetCandidateCount = AUBBudgetCandidateCount(_snapshot);
+  bool shortcutConflict = [_delegate usagePanelViewShortcutConflicted:self];
+  y += 10;
+  if (draw) {
+    AUBDrawCheckbox([_delegate usagePanelViewOpenAtLogin:self], AUBMargin + 10,
+                    y + 1);
+    AUBDrawText(@"Open at Login", AUBMargin + 28, y, _caption);
+    AUBDrawText(@"Launch automatically when you log in", AUBMargin + 28, y + 17,
+                _caption2);
+    [self addAction:AUBActionToggleLogin
+               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
+  }
+  y += 48;
+  if (draw) {
+    AUBDrawCheckbox([_delegate usagePanelViewShortcutEnabled:self],
+                    AUBMargin + 10, y + 1);
+    AUBDrawText(@"Keyboard Shortcut (⌘U)", AUBMargin + 28, y, _caption);
+    AUBDrawText(@"Toggle this popup from anywhere", AUBMargin + 28, y + 17,
+                _caption2);
+    [self addAction:AUBActionToggleShortcut
+               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
+  }
+  y += 42;
+  if (shortcutConflict) {
+    if (draw) {
+      AUBDrawText(@"⌘U is already in use, so the shortcut is inactive.",
+                  AUBMargin + 28, y, _warning2);
+    }
+    y += 18;
   }
 
+  if (draw) {
+    [NSColor.separatorColor setFill];
+    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
+  }
+  y += 14;
+  if (draw)
+    AUBDrawText(@"Monthly budget", AUBMargin + 10, y, _caption);
+  y += 20;
+  if (budgetCandidateCount == 0) {
+    if (draw) {
+      AUBDrawText(@"Both providers report their own limits.", AUBMargin + 10, y,
+                  _caption2);
+    }
+    y += 20;
+  } else {
+    for (AUBProviderKind kind = AUBProviderKindClaude;
+         kind <= AUBProviderKindCodex; kind++) {
+      const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
+      if (!AUBCanOverrideBudget(provider))
+        continue;
+      NSRect field = NSMakeRect(AUBMargin + 70, y - 3, 96, 22);
+      if (draw) {
+        bool editing = [self isEditingBudgetFor:kind];
+        AUBDrawText(AUBProviderName(kind), AUBMargin + 10, y, _caption2);
+        [(editing ? NSColor.controlAccentColor
+                  : NSColor.tertiaryLabelColor) setStroke];
+        [[NSBezierPath bezierPathWithRoundedRect:field xRadius:4
+                                         yRadius:4] stroke];
+        NSString *input = @"";
+        if (editing) {
+          input = AUBString(_budgetInput);
+        } else if (provider->budget.overridden) {
+          double value = (double)provider->budget.limitMinor /
+                         (double)AUBScale(provider->budget.exponent);
+          input = [NSString
+              stringWithFormat:@"%.*f", provider->budget.exponent, value];
+        }
+        NSDictionary *inputAttributes =
+            input.length == 0 ? _caption2 : _caption;
+        AUBDrawText(input.length == 0 ? @"e.g. 1000" : input, NSMinX(field) + 6,
+                    y, inputAttributes);
+        [self addAction:AUBActionEditBudget argument:kind rect:field];
+
+        NSRect set = NSMakeRect(NSMaxX(field) + 8, y - 3, 34, 22);
+        AUBDrawText(@"Set", NSMinX(set) + 6, y, _caption);
+        [self addAction:AUBActionSetBudget argument:kind rect:set];
+        if (provider->budget.overridden) {
+          NSRect clear = NSMakeRect(NSMaxX(set) + 6, y - 3, 44, 22);
+          AUBDrawText(@"Clear", NSMinX(clear) + 4, y, _caption);
+          [self addAction:AUBActionClearBudget argument:kind rect:clear];
+        }
+      }
+      y += 34;
+    }
+  }
+
+  if (draw) {
+    [NSColor.separatorColor setFill];
+    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
+  }
+  y += 14;
+  if (draw) {
+    AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
+                _caption);
+  }
+  y += 18;
+  if (draw) {
+    AUBDrawText(@"At least one service must remain selected.", AUBMargin + 10,
+                y, _caption2);
+  }
+  y += 24;
+  for (uint8_t index = 0; index < _snapshot->statusComponentCount; index++) {
+    const AUBStatusComponent *component = &_snapshot->statusComponents[index];
+    if (draw) {
+      AUBDrawCheckbox(component->tracked, AUBMargin + 10, y + 1);
+      AUBDrawText(AUBString(component->name), AUBMargin + 28, y, _caption2);
+      AUBDrawRight(AUBComponentStatusLabel(component->status),
+                   AUBWidth - AUBMargin - 10, y, _caption2);
+      [self
+          addAction:AUBActionToggleStatusComponent
+           argument:index
+               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 22)];
+    }
+    y += 24;
+  }
+
+  if (draw) {
+    [NSColor.separatorColor setFill];
+    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
+  }
+  y += 14;
+  if (draw)
+    AUBDrawText(@"Appearance", AUBMargin + 10, y, _caption);
+  y += 22;
+  const AUBAppearanceMode modes[] = {
+      AUBAppearanceModeSystem,
+      AUBAppearanceModeDark,
+      AUBAppearanceModeLight,
+  };
+  NSString *const labels[] = {@"System", @"Dark", @"Light"};
+  const uint8_t segmentCount = sizeof(modes) / sizeof(modes[0]);
+  CGFloat segmentWidth = (AUBContentWidth - 20) / segmentCount;
+  AUBAppearanceMode selected = [_delegate usagePanelViewAppearanceMode:self];
+  for (uint8_t index = 0; index < segmentCount; index++) {
+    NSRect segment =
+        NSMakeRect(AUBMargin + 10 + segmentWidth * index, y, segmentWidth, 24);
+    if (draw) {
+      bool isSelected = selected == modes[index];
+      [(isSelected
+            ? NSColor.controlAccentColor
+            : [NSColor.labelColor colorWithAlphaComponent:0.08]) setFill];
+      [[NSBezierPath bezierPathWithRoundedRect:segment xRadius:4
+                                       yRadius:4] fill];
+      NSDictionary *attributes = isSelected ? _segmentSelected : _segment;
+      NSString *label = labels[index];
+      NSSize size = [label sizeWithAttributes:attributes];
+      AUBDrawText(label, NSMidX(segment) - size.width / 2,
+                  NSMidY(segment) - size.height / 2, attributes);
+      [self addAction:AUBActionAppearance argument:modes[index] rect:segment];
+    }
+  }
+  y += 34;
+  return y;
+}
+
+- (CGFloat)provider:(AUBProviderKind)kind y:(CGFloat)y draw:(bool)draw {
+  const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
+  if (!AUBProviderVisible(provider))
+    return y;
+
+  NSString *name = AUBProviderName(kind);
   NSString *title = provider->plan[0] == '\0'
                         ? name
                         : [NSString stringWithFormat:@"%@ · %@", name,
                                                      AUBString(provider->plan)];
   if (draw)
-    AUBDrawText(title, AUBMargin, y, titleAttributes);
+    AUBDrawText(title, AUBMargin, y, _subheadlineBold);
   y += 24;
 
   if (provider->status == AUBProviderStatusFailed) {
@@ -674,18 +656,17 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
 
   for (uint8_t index = 0; index < provider->windowCount; index++) {
     const AUBWindow *window = &provider->windows[index];
-    bool headline =
-        strcmp(window->id, "session") == 0 || strcmp(window->id, "weekly") == 0;
+    bool headline = strcmp(window->id, AUBWindowIDSession) == 0 ||
+                    strcmp(window->id, AUBWindowIDWeekly) == 0;
     if (!headline && window->percent < 1)
       continue;
 
     if (draw) {
-      AUBDrawText(AUBString(window->label), AUBMargin, y, titleAttributes);
-      AUBDrawRight(AUBResetText(window), AUBWidth - AUBMargin, y,
-                   captionAttributes);
+      AUBDrawText(AUBString(window->label), AUBMargin, y, _subheadlineBold);
+      AUBDrawRight(AUBResetText(window), AUBWidth - AUBMargin, y, _caption);
       [self drawProgressAtY:y + 20 percent:window->percent];
       AUBDrawText([NSString stringWithFormat:@"%.0f%% used", window->percent],
-                  AUBMargin, y + 30, captionAttributes);
+                  AUBMargin, y + 30, _caption);
     }
     y += 52;
   }
@@ -701,14 +682,12 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     double percent =
         100.0 * (double)budget->spentMinor / (double)budget->limitMinor;
     if (draw) {
-      AUBDrawText(budgetTitle, AUBMargin, y, titleAttributes);
+      AUBDrawText(budgetTitle, AUBMargin, y, _subheadlineBold);
       NSString *manage = @"Manage →";
-      AUBDrawRight(manage, AUBWidth - AUBMargin, y, titleAttributes);
-      CGFloat width = ceil([manage sizeWithAttributes:titleAttributes].width);
-      AUBAction action = [name isEqualToString:@"Claude"]
-                             ? AUBActionManageClaude
-                             : AUBActionManageCodex;
-      [self addAction:action
+      AUBDrawRight(manage, AUBWidth - AUBMargin, y, _subheadlineBold);
+      CGFloat width = ceil([manage sizeWithAttributes:_subheadlineBold].width);
+      [self addAction:AUBActionManageProvider
+             argument:kind
                  rect:NSMakeRect(AUBWidth - AUBMargin - width - 4, y - 2,
                                  width + 8, 20)];
       [self drawProgressAtY:y + 20 percent:percent];
@@ -719,7 +698,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                                      AUBAmount(budget->spentMinor, budget),
                                      AUBAmount(budget->limitMinor, budget),
                                      AUBAmount(remaining, budget), percent];
-      AUBDrawText(detail, AUBMargin, y + 30, captionAttributes);
+      AUBDrawText(detail, AUBMargin, y + 30, _caption);
     }
     y += 52;
 
@@ -727,7 +706,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       if (draw) {
         AUBDrawText(
             @"Limit set by you in Settings, not reported by the provider.",
-            AUBMargin, y, caption2Attributes);
+            AUBMargin, y, _caption2);
       }
       y += 18;
     }
@@ -755,15 +734,14 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       NSString *text = [NSString
           stringWithFormat:@"%@ available",
                            AUBAmount(provider->creditBalanceMinor, &credits)];
-      AUBDrawText(text, AUBMargin, y, captionAttributes);
+      AUBDrawText(text, AUBMargin, y, _caption);
     }
     y += 20;
   } else if (provider->budget.present) {
     NSString *message =
         @"No monthly limit reported. Set one in Settings to see percent used.";
-    CGFloat height =
-        AUBDrawWrapped(message, NSMakeRect(AUBMargin, y, AUBContentWidth, 0),
-                       caption2Attributes, draw);
+    CGFloat height = AUBDrawWrapped(
+        message, NSMakeRect(AUBMargin, y, AUBContentWidth, 0), _caption2, draw);
     y += height + 8;
   }
 
@@ -804,11 +782,14 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       (AUBActionRect){.rect = rect, .action = action, .argument = argument};
 }
 
-- (void)beginBudgetEditing:(AUBBudgetEditor)editor {
-  _budgetEditor = editor;
-  const AUBBudgetReading *budget = editor == AUBBudgetEditorClaude
-                                       ? &_snapshot->claude.budget
-                                       : &_snapshot->codex.budget;
+- (bool)isEditingBudgetFor:(AUBProviderKind)kind {
+  return _editingBudget && _budgetEditorKind == kind;
+}
+
+- (void)beginBudgetEditing:(AUBProviderKind)kind {
+  _editingBudget = true;
+  _budgetEditorKind = kind;
+  const AUBBudgetReading *budget = &AUBStateForKind(_snapshot, kind)->budget;
   if (budget->overridden) {
     double value =
         (double)budget->limitMinor / (double)AUBScale(budget->exponent);
@@ -821,14 +802,12 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   [self setNeedsDisplay:YES];
 }
 
-- (void)commitBudgetEditor:(AUBBudgetEditor)editor {
-  if (_budgetEditor != editor)
-    [self beginBudgetEditing:editor];
+- (void)commitBudgetEditingFor:(AUBProviderKind)kind {
+  if (![self isEditingBudgetFor:kind])
+    [self beginBudgetEditing:kind];
   char *end = NULL;
   double value = strtod(_budgetInput, &end);
-  const AUBBudgetReading *budget = editor == AUBBudgetEditorClaude
-                                       ? &_snapshot->claude.budget
-                                       : &_snapshot->codex.budget;
+  const AUBBudgetReading *budget = &AUBStateForKind(_snapshot, kind)->budget;
   int64_t scale = AUBScale(budget->exponent);
   if (_budgetInput[0] == '\0' || end == _budgetInput || *end != '\0' ||
       !isfinite(value) || value <= 0 ||
@@ -836,14 +815,10 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     NSBeep();
     return;
   }
-  int64_t minor = llround(value * (double)scale);
-  AUBProviderKind provider = editor == AUBBudgetEditorClaude
-                                 ? AUBProviderKindClaude
-                                 : AUBProviderKindCodex;
   [_delegate usagePanelView:self
-      setBudgetOverrideMinor:minor
-                 forProvider:provider];
-  _budgetEditor = AUBBudgetEditorClosed;
+      setBudgetOverrideMinor:llround(value * (double)scale)
+                 forProvider:kind];
+  _editingBudget = false;
   _budgetInput[0] = '\0';
   [self setNeedsDisplay:YES];
 }
@@ -859,23 +834,17 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   for (uint8_t index = 0; index < _actionCount; index++) {
     if (!NSPointInRect(point, _actions[index].rect))
       continue;
+    uint8_t argument = _actions[index].argument;
     switch (_actions[index].action) {
     case AUBActionRefresh:
       [_delegate usagePanelViewDidRequestRefresh:self];
       return;
     case AUBActionToggleSettings:
       _showingSettings = !_showingSettings;
+      // Invalidate before the delegate resizes: it asks for the content height,
+      // which would otherwise still be the measurement for the old state.
       [self reload];
       [_delegate usagePanelViewDidChangeContentHeight:self];
-      return;
-    case AUBActionManageClaude:
-      [NSWorkspace.sharedWorkspace
-          openURL:[NSURL URLWithString:@"https://claude.ai/settings/usage"]];
-      return;
-    case AUBActionManageCodex:
-      [NSWorkspace.sharedWorkspace
-          openURL:[NSURL URLWithString:
-                             @"https://chatgpt.com/codex/settings/usage"]];
       return;
     case AUBActionToggleLogin: {
       BOOL enabled = ![_delegate usagePanelViewOpenAtLogin:self];
@@ -892,52 +861,37 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       [_delegate usagePanelViewDidChangeContentHeight:self];
       return;
     }
-    case AUBActionEditClaudeBudget:
-      [self beginBudgetEditing:AUBBudgetEditorClaude];
-      return;
-    case AUBActionSetClaudeBudget:
-      [self commitBudgetEditor:AUBBudgetEditorClaude];
-      return;
-    case AUBActionClearClaudeBudget:
-      _budgetEditor = AUBBudgetEditorClosed;
-      [_delegate usagePanelView:self
-          clearBudgetOverrideForProvider:AUBProviderKindClaude];
-      return;
-    case AUBActionEditCodexBudget:
-      [self beginBudgetEditing:AUBBudgetEditorCodex];
-      return;
-    case AUBActionSetCodexBudget:
-      [self commitBudgetEditor:AUBBudgetEditorCodex];
-      return;
-    case AUBActionClearCodexBudget:
-      _budgetEditor = AUBBudgetEditorClosed;
-      [_delegate usagePanelView:self
-          clearBudgetOverrideForProvider:AUBProviderKindCodex];
-      return;
     case AUBActionToggleStatusComponent:
-      [_delegate usagePanelView:self
-          toggleStatusComponentAtIndex:_actions[index].argument];
+      [_delegate usagePanelView:self toggleStatusComponentAtIndex:argument];
       return;
-    case AUBActionAppearanceSystem:
-      [_delegate usagePanelView:self setAppearanceMode:AUBAppearanceModeSystem];
+    case AUBActionManageProvider:
+      [NSWorkspace.sharedWorkspace
+          openURL:[NSURL URLWithString:AUBManageURL(argument)]];
       return;
-    case AUBActionAppearanceDark:
-      [_delegate usagePanelView:self setAppearanceMode:AUBAppearanceModeDark];
+    case AUBActionEditBudget:
+      [self beginBudgetEditing:argument];
       return;
-    case AUBActionAppearanceLight:
-      [_delegate usagePanelView:self setAppearanceMode:AUBAppearanceModeLight];
+    case AUBActionSetBudget:
+      [self commitBudgetEditingFor:argument];
+      return;
+    case AUBActionClearBudget:
+      _editingBudget = false;
+      [_delegate usagePanelView:self clearBudgetOverrideForProvider:argument];
+      return;
+    case AUBActionAppearance:
+      [_delegate usagePanelView:self setAppearanceMode:argument];
       return;
     }
   }
 }
 
 - (void)keyDown:(NSEvent *)event {
-  if (_budgetEditor == AUBBudgetEditorClosed) {
+  if (!_editingBudget) {
     [super keyDown:event];
     return;
   }
   if (event.keyCode == 36 || event.keyCode == 76) {
-    [self commitBudgetEditor:_budgetEditor];
+    [self commitBudgetEditingFor:_budgetEditorKind];
     return;
   }
   if (event.keyCode == 51) {

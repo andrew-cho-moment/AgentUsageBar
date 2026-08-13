@@ -6,12 +6,28 @@ struct FetcherMain {
     private enum Command {
         case usage
         case status
+        case all
 
         init?(arguments: ArraySlice<String>) {
             switch Array(arguments) {
             case []: self = .usage
             case ["--status-only"]: self = .status
+            case ["--all"]: self = .all
             default: return nil
+            }
+        }
+
+        var wantsUsage: Bool {
+            switch self {
+            case .usage, .all: return true
+            case .status: return false
+            }
+        }
+
+        var wantsStatus: Bool {
+            switch self {
+            case .status, .all: return true
+            case .usage: return false
             }
         }
     }
@@ -25,17 +41,32 @@ struct FetcherMain {
         guard let command = Command(arguments: CommandLine.arguments.dropFirst()) else {
             exit(2)
         }
-        if case .status = command {
-            emit("V", "1")
-            if let status = await StatusFetcher.fetch() {
-                emit(status)
-            }
-            emit("D", epoch(Date()))
-            return
-        }
 
+        // Usage and status are independent network work, so a combined run overlaps
+        // them. That is what lets the app ask one process for both halves instead of
+        // paying a second Foundation + CFNetwork launch to fetch them separately.
+        async let status = fetchStatus(command.wantsStatus)
+        let usage = command.wantsUsage ? await fetchProviders() : []
+
+        emit("V", "1")
+        for result in usage {
+            switch result.result {
+            case .success(let snapshot): emit(snapshot)
+            case .failure(let error): emit(result.provider, error: error)
+            }
+        }
+        if let status = await status { emit(status) }
+        emit("D", epoch(Date()))
+    }
+
+    private static func fetchStatus(_ wanted: Bool) async -> StatusFetchResult? {
+        guard wanted else { return nil }
+        return await StatusFetcher.fetch()
+    }
+
+    private static func fetchProviders() async -> [FetchResult] {
         let providers: [any UsageProvider] = [ClaudeProvider(), CodexProvider()]
-        let results = await withTaskGroup(of: FetchResult.self) { group in
+        return await withTaskGroup(of: FetchResult.self) { group in
             for provider in providers {
                 group.addTask {
                     do {
@@ -53,15 +84,6 @@ struct FetcherMain {
             for await result in group { collected.append(result) }
             return collected.sorted { $0.provider.rawValue < $1.provider.rawValue }
         }
-
-        emit("V", "1")
-        for result in results {
-            switch result.result {
-            case .success(let snapshot): emit(snapshot)
-            case .failure(let error): emit(result.provider, error: error)
-            }
-        }
-        emit("D", epoch(Date()))
     }
 
     private static func emit(_ status: StatusFetchResult) {
