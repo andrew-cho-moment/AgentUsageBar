@@ -6,7 +6,6 @@ BUNDLE_ID="com.andrewcho.agentusagebar"
 APP_PATH="build/${APP_NAME}.app"
 EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_NAME"
 FETCHER="$APP_PATH/Contents/Helpers/AgentUsageFetcher"
-CREDENTIAL_HELPER="$APP_PATH/Contents/Helpers/CredentialHelper"
 LOCAL_SIGNING_IDENTITY="AgentUsageBar Dev"
 
 if [ -z "${CODESIGN_IDENTITY+x}" ]; then
@@ -64,22 +63,6 @@ xcrun clang \
     -arch arm64 \
     -mmacosx-version-min=14.0 \
     -Oz \
-    -flto \
-    -fvisibility=hidden \
-    -Wall \
-    -Wextra \
-    -Werror \
-    -framework CoreFoundation \
-    -framework Security \
-    -Wl,-dead_strip \
-    -Wl,-x \
-    -o "$CREDENTIAL_HELPER" \
-    CredentialMain.c
-
-xcrun clang \
-    -arch arm64 \
-    -mmacosx-version-min=14.0 \
-    -Oz \
     -Wall \
     -Wextra \
     -Werror \
@@ -130,10 +113,8 @@ cp AgentUsageBar.icns "$APP_PATH/Contents/Resources/AgentUsageBar.icns"
 printf 'APPL????' > "$APP_PATH/Contents/PkgInfo"
 
 xattr -cr "$APP_PATH"
-codesign --force --options runtime --identifier "$BUNDLE_ID" \
+codesign --force --options runtime --identifier "$BUNDLE_ID.fetcher" \
     --sign "$CODESIGN_IDENTITY" "$FETCHER"
-codesign --force --options runtime --identifier "$BUNDLE_ID.credential-helper" \
-    --sign "$CODESIGN_IDENTITY" "$CREDENTIAL_HELPER"
 codesign --force --options runtime --sign "$CODESIGN_IDENTITY" "$APP_PATH"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 

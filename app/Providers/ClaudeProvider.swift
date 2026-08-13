@@ -10,6 +10,9 @@ final class ClaudeProvider: UsageProvider, Sendable {
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private static let betaHeader = "oauth-2025-04-20"
     private static let maximumCredentialBytes = 64 * 1024
+    private static let keychainService = "Claude Code-credentials"
+    /// `security` reports `errSecItemNotFound` as exit 44.
+    private static let itemNotFoundStatus: Int32 = 44
 
     /// `~/.claude.json` can grow large, so the plan label is read at most once per launch.
     private actor PlanLabelCache {
@@ -32,13 +35,6 @@ final class ClaudeProvider: UsageProvider, Sendable {
 
         let claudeAiOauth: OAuth?
         let accessToken: String?
-    }
-
-    private enum CredentialHelperExit: Int32 {
-        case success
-        case failure
-        case usage
-        case notFound
     }
 
     private struct ClaudeConfig: Decodable {
@@ -148,37 +144,40 @@ final class ClaudeProvider: UsageProvider, Sendable {
 
     private let planLabelCache = PlanLabelCache()
 
-    /// The Keychain item holds JSON rather than a bare token. Reading it prompts for
-    /// consent the first time, since the item belongs to Claude Code.
+    /// The Keychain item holds JSON rather than a bare token. Claude Code rewrites the item
+    /// on every token refresh with `security add-generic-password -U`, and each rewrite
+    /// installs a fresh ACL trusting only `/usr/bin/security`. Reading through that same
+    /// tool is therefore the one route that never prompts for consent.
     private static func accessToken() throws -> String {
-        let fetcher = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
-        let helper = fetcher.deletingLastPathComponent().appendingPathComponent(
-            "CredentialHelper")
         let process = Process()
         let output = Pipe()
-        process.executableURL = helper
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", keychainService, "-w"]
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
-            throw UsageError.malformed(field: "credential helper")
+            throw UsageError.malformed(field: "security tool")
         }
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard process.terminationReason == .exit,
-            let status = CredentialHelperExit(rawValue: process.terminationStatus)
-        else {
-            throw UsageError.malformed(field: "credential helper exit")
+        guard process.terminationReason == .exit else {
+            throw UsageError.malformed(field: "security tool exit")
         }
-        switch status {
-        case .success: break
-        case .notFound: throw UsageError.notLoggedIn(.claude)
-        case .failure: throw UsageError.keychain
-        case .usage: throw UsageError.malformed(field: "credential helper arguments")
+        switch process.terminationStatus {
+        case 0: break
+        case Self.itemNotFoundStatus: throw UsageError.notLoggedIn(.claude)
+        default: throw UsageError.keychain
         }
-        guard !data.isEmpty, data.count <= maximumCredentialBytes,
-            let credentials = try? JSONDecoder().decode(KeychainCredentials.self, from: data)
+        // `security -w` terminates the payload with a newline.
+        var payload = data
+        while payload.last == UInt8(ascii: "\n") {
+            payload.removeLast()
+        }
+        guard !payload.isEmpty, payload.count <= maximumCredentialBytes,
+            let credentials = try? JSONDecoder().decode(
+                KeychainCredentials.self, from: payload)
         else {
             throw UsageError.malformed(field: "keychain payload")
         }
