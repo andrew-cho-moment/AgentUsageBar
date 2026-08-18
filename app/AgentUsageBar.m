@@ -3,6 +3,7 @@
 #import <malloc/malloc.h>
 
 #include <dlfcn.h>
+#import <math.h>
 #import <string.h>
 
 #import "FetcherProtocol.h"
@@ -127,6 +128,19 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
   return AUBAppendText(title, capacity, group);
 }
 
+/// Idle poll cadence. Both providers meter rolling multi-hour windows, so the
+/// number moves only while an agent runs; the leeway lets the kernel fold this
+/// wake into one it was already making rather than scheduling its own.
+static const double kAUBPollInterval = 300;
+static const uint64_t kAUBPollLeeway = 60 * NSEC_PER_SEC;
+/// A window drops to zero the instant it rolls over, so poll just past the
+/// boundary instead of showing the spent percentage for another interval.
+static const double kAUBResetSlack = 5;
+
+static double AUBNow(void) {
+  return CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970;
+}
+
 @interface AUBPanel : NSPanel
 @end
 
@@ -148,6 +162,11 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
   EventHandlerRef _hotKeyHandler;
   EventHotKeyRef _hotKey;
   CFAbsoluteTime _lastPanelClose;
+  dispatch_source_t _pollTimer;
+  double _usageAttemptedAt;
+  double _statusAttemptedAt;
+  double _pollUsageAt;
+  double _pollStatusAt;
   bool _usageRefreshing;
   bool _statusRefreshing;
   bool _statusRefreshPending;
@@ -162,6 +181,8 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
 - (void)refresh;
 - (void)refreshUsage;
 - (void)refreshStatus;
+- (void)schedulePoll;
+- (void)poll;
 - (void)applyAppearance;
 - (void)applyBudgetOverrides;
 @end
@@ -209,10 +230,15 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   if (_shortcutEnabled)
     [self registerHotKey];
   if (AUBLoadSnapshot(&_snapshot)) {
+    // Both halves are as old as the cache: a snapshot written hours ago is due
+    // for a poll immediately, one written seconds ago is not.
+    _usageAttemptedAt = _snapshot.fetchedAt;
+    _statusAttemptedAt = _snapshot.statusFetchedAt;
     [self render];
   } else {
     [self refresh];
   }
+  [self schedulePoll];
 
   // First launch only. Registering with launchd is a synchronous XPC
   // round-trip, so it runs after the status item exists and off the main
@@ -249,6 +275,10 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 - (void)applicationWillTerminate:(NSNotification *)notification {
   (void)notification;
   _terminating = true;
+  if (_pollTimer != NULL) {
+    dispatch_source_cancel(_pollTimer);
+    _pollTimer = NULL;
+  }
   if (_hotKey != NULL)
     UnregisterEventHotKey(_hotKey);
   if (_hotKeyHandler != NULL)
@@ -288,6 +318,59 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   [self refreshUsage:false status:true];
 }
 
+/// Arms the next poll. One shot, re-armed after every fetch, so two polls can
+/// never be in flight and a manual refresh resets the clock for free. The
+/// deadline is wall clock and the timer is not strict: it never wakes a
+/// sleeping machine, and after a sleep long enough to pass the deadline the
+/// poll runs on wake instead of drifting by the length of the sleep.
+- (void)schedulePoll {
+  _pollUsageAt = _usageAttemptedAt + kAUBPollInterval;
+  _pollStatusAt = _statusAttemptedAt + kAUBPollInterval;
+  double now = AUBNow();
+  const AUBProviderState *providers[] = {&_snapshot.claude, &_snapshot.codex};
+  for (size_t provider = 0; provider < 2; provider++) {
+    for (uint8_t index = 0; index < providers[provider]->windowCount; index++) {
+      const AUBWindow *window = &providers[provider]->windows[index];
+      if (!window->hasReset)
+        continue;
+      double due = window->resetsAt + kAUBResetSlack;
+      if (due > now && due < _pollUsageAt)
+        _pollUsageAt = due;
+    }
+  }
+
+  if (_pollTimer == NULL) {
+    _pollTimer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+        dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0));
+    dispatch_source_set_event_handler(_pollTimer, ^{
+      dispatch_async(dispatch_get_main_queue(), ^{
+        [self poll];
+      });
+    });
+    dispatch_resume(_pollTimer);
+  }
+  double deadline = MIN(_pollUsageAt, _pollStatusAt);
+  // Round up: a deadline truncated into the past would fire early, find nothing
+  // due, and spend a wake on re-arming.
+  struct timespec when = {.tv_sec = (time_t)ceil(deadline)};
+  dispatch_source_set_timer(_pollTimer, dispatch_walltime(&when, 0),
+                            DISPATCH_TIME_FOREVER, kAUBPollLeeway);
+}
+
+- (void)poll {
+  double now = AUBNow();
+  bool wantsUsage = now >= _pollUsageAt;
+  bool wantsStatus = now >= _pollStatusAt;
+  // Re-arming is the merge's job. Doing it here as well would busy-loop against
+  // a fetch that has not come back yet, since its attempt clock only advances
+  // when the fetch starts.
+  if (wantsUsage || wantsStatus)
+    [self refreshUsage:wantsUsage status:wantsStatus];
+  else
+    [self schedulePoll];
+}
+
 /// Fetches the requested halves in a single helper run. Each half costs a full
 /// dyld load of Foundation and CFNetwork in the helper, so asking one process
 /// for both is worth more than any saving inside the app.
@@ -302,6 +385,13 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     return;
   _usageRefreshing = _usageRefreshing || wantsUsage;
   _statusRefreshing = _statusRefreshing || wantsStatus;
+  // The poll cadence counts from the attempt, not the result: a provider that
+  // is down would otherwise leave the deadline in the past and retry in a loop.
+  double now = AUBNow();
+  if (wantsUsage)
+    _usageAttemptedAt = now;
+  if (wantsStatus)
+    _statusAttemptedAt = now;
 
   AUBFetcherMode mode =
       wantsUsage ? (wantsStatus ? AUBFetcherModeAll : AUBFetcherModeUsage)
@@ -373,6 +463,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     _statusRefreshPending = false;
     [self refreshUsage:false status:true];
   }
+  [self schedulePoll];
 }
 
 static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
@@ -502,7 +593,7 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
                                      return event;
                                    }];
 
-  double now = CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970;
+  double now = AUBNow();
   bool usageStale = !_snapshot.valid || now - _snapshot.fetchedAt > 60;
   bool statusStale =
       !_snapshot.hasStatus || now - _snapshot.statusFetchedAt > 60;
