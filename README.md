@@ -106,9 +106,29 @@ launch and explicit toggles. It registers the main app directly, because
 `SMAppService.mainAppService` resolves through the main bundle and reports `NotFound` from a
 bare helper in `Contents/Helpers`.
 
-## Build
+## Install
 
 Requirements: macOS 14 or newer, Xcode command-line tools, and Apple silicon.
+
+```bash
+./setup.sh
+```
+
+That creates the local signing identity if it is missing, builds, replaces any copy in
+`/Applications`, and launches the app. Re-running it is the update path: settings live in
+the `com.andrewcho.agentusagebar` defaults domain rather than in the bundle, so replacing
+the bundle keeps them.
+
+Each run also clears state that outlives the build which created it. Every test bundle in
+this project's history took a suffixed bundle id, and macOS made each one a shader cache
+and a preferences domain that nothing deletes when the build goes away. The sweep removes
+those, along with defaults keys the current app no longer reads and any `.DS_Store` in the
+tree, while leaving the live domain and the snapshot cache alone. `./setup.sh --clean`
+runs that sweep by itself.
+
+## Build
+
+To build without installing:
 
 ```bash
 cd app
@@ -116,7 +136,7 @@ cd app
 ./build.sh
 ```
 
-The build runs fifteen deterministic protocol and cache tests, compiles size-optimized
+The build runs twenty-two deterministic protocol and cache tests, compiles size-optimized
 arm64 binaries with full link-time optimization, strips local symbols, signs every helper
 and the app, and verifies the nested signature. The result is
 `app/build/AgentUsageBar.app`.
