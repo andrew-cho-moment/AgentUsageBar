@@ -3,7 +3,6 @@
 #import <malloc/malloc.h>
 
 #include <dlfcn.h>
-#import <math.h>
 #import <string.h>
 
 #import "FetcherProtocol.h"
@@ -131,11 +130,22 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
 /// Idle poll cadence. Both providers meter rolling multi-hour windows, so the
 /// number moves only while an agent runs; the leeway lets the kernel fold this
 /// wake into one it was already making rather than scheduling its own.
-static const double kAUBPollInterval = 300;
-static const uint64_t kAUBPollLeeway = 60 * NSEC_PER_SEC;
-/// A window drops to zero the instant it rolls over, so poll just past the
-/// boundary instead of showing the spent percentage for another interval.
-static const double kAUBResetSlack = 5;
+static const double AUBPollInterval = 300;
+static const uint64_t AUBPollLeeway = 60 * NSEC_PER_SEC;
+/// A meter drops to zero the instant its window rolls over, so poll just past
+/// the boundary instead of showing the spent percentage for another interval.
+static const double AUBResetSlack = 5;
+/// How stale the panel tolerates on open, where the user is waiting on the
+/// number rather than glancing at the menu bar.
+static const double AUBPanelFreshness = 60;
+
+/// Pulls a poll deadline back to just past a reset that lands before it, so a
+/// rolled-over meter reads zero rather than its spent percentage.
+static double AUBPullToReset(double deadline, double now, bool hasReset,
+                             double resetsAt) {
+  double due = resetsAt + AUBResetSlack;
+  return hasReset && due > now && due < deadline ? due : deadline;
+}
 
 static double AUBNow(void) {
   return CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970;
@@ -166,7 +176,6 @@ static double AUBNow(void) {
   double _usageAttemptedAt;
   double _statusAttemptedAt;
   double _pollUsageAt;
-  double _pollStatusAt;
   bool _usageRefreshing;
   bool _statusRefreshing;
   bool _statusRefreshPending;
@@ -179,10 +188,7 @@ static double AUBNow(void) {
 }
 - (void)togglePanel;
 - (void)refresh;
-- (void)refreshUsage;
 - (void)refreshStatus;
-- (void)schedulePoll;
-- (void)poll;
 - (void)applyAppearance;
 - (void)applyBudgetOverrides;
 @end
@@ -230,8 +236,8 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   if (_shortcutEnabled)
     [self registerHotKey];
   if (AUBLoadSnapshot(&_snapshot)) {
-    // Both halves are as old as the cache: a snapshot written hours ago is due
-    // for a poll immediately, one written seconds ago is not.
+    // An hours-old cache is due for a poll immediately, a seconds-old one is
+    // not.
     _usageAttemptedAt = _snapshot.fetchedAt;
     _statusAttemptedAt = _snapshot.statusFetchedAt;
     [self render];
@@ -275,9 +281,9 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 - (void)applicationWillTerminate:(NSNotification *)notification {
   (void)notification;
   _terminating = true;
-  if (_pollTimer != NULL) {
+  if (_pollTimer != nil) {
     dispatch_source_cancel(_pollTimer);
-    _pollTimer = NULL;
+    _pollTimer = nil;
   }
   if (_hotKey != NULL)
     UnregisterEventHotKey(_hotKey);
@@ -310,65 +316,62 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   [self refreshUsage:true status:true];
 }
 
-- (void)refreshUsage {
-  [self refreshUsage:true status:false];
-}
-
 - (void)refreshStatus {
   [self refreshUsage:false status:true];
 }
 
-/// Arms the next poll. One shot, re-armed after every fetch, so two polls can
-/// never be in flight and a manual refresh resets the clock for free. The
-/// deadline is wall clock and the timer is not strict: it never wakes a
-/// sleeping machine, and after a sleep long enough to pass the deadline the
-/// poll runs on wake instead of drifting by the length of the sleep.
+/// Arms the next poll, one shot, so a fetch in flight can never be joined by a
+/// second one. An outstanding fetch owns the next arming: `merge:` runs it
+/// whatever the fetch returned, which is also what stops this from re-arming a
+/// deadline the fetch has not yet moved and spinning on it.
+///
+/// The deadline is wall clock and the timer is not strict: it never wakes a
+/// sleeping machine, after a sleep long enough to pass the deadline the poll
+/// runs on wake instead of drifting by the length of the sleep, and the kernel
+/// is free to fold the wake into one it was already making.
 - (void)schedulePoll {
-  _pollUsageAt = _usageAttemptedAt + kAUBPollInterval;
-  _pollStatusAt = _statusAttemptedAt + kAUBPollInterval;
-  double now = AUBNow();
-  const AUBProviderState *providers[] = {&_snapshot.claude, &_snapshot.codex};
-  for (size_t provider = 0; provider < 2; provider++) {
-    for (uint8_t index = 0; index < providers[provider]->windowCount; index++) {
-      const AUBWindow *window = &providers[provider]->windows[index];
-      if (!window->hasReset)
-        continue;
-      double due = window->resetsAt + kAUBResetSlack;
-      if (due > now && due < _pollUsageAt)
-        _pollUsageAt = due;
-    }
-  }
-
-  if (_pollTimer == NULL) {
-    _pollTimer = dispatch_source_create(
-        DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
-        dispatch_get_global_queue(QOS_CLASS_BACKGROUND, 0));
+  if (_usageRefreshing || _statusRefreshing)
+    return;
+  if (_pollTimer == nil) {
+    _pollTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                        dispatch_get_main_queue());
+    __weak AUBAppDelegate *weakSelf = self;
     dispatch_source_set_event_handler(_pollTimer, ^{
-      dispatch_async(dispatch_get_main_queue(), ^{
-        [self poll];
-      });
+      [weakSelf poll];
     });
     dispatch_resume(_pollTimer);
   }
-  double deadline = MIN(_pollUsageAt, _pollStatusAt);
-  // Round up: a deadline truncated into the past would fire early, find nothing
-  // due, and spend a wake on re-arming.
-  struct timespec when = {.tv_sec = (time_t)ceil(deadline)};
-  dispatch_source_set_timer(_pollTimer, dispatch_walltime(&when, 0),
-                            DISPATCH_TIME_FOREVER, kAUBPollLeeway);
+
+  double now = AUBNow();
+  _pollUsageAt = _usageAttemptedAt + AUBPollInterval;
+  for (AUBProviderKind kind = AUBProviderKindClaude;
+       kind <= AUBProviderKindCodex; kind++) {
+    const AUBProviderState *provider = [self stateForKind:kind];
+    for (uint8_t index = 0; index < provider->windowCount; index++) {
+      const AUBWindow *window = &provider->windows[index];
+      _pollUsageAt = AUBPullToReset(_pollUsageAt, now, window->hasReset,
+                                    window->resetsAt);
+    }
+    _pollUsageAt = AUBPullToReset(_pollUsageAt, now, provider->budget.hasReset,
+                                  provider->budget.resetsAt);
+  }
+  double deadline = MIN(_pollUsageAt, _statusAttemptedAt + AUBPollInterval);
+  dispatch_source_set_timer(
+      _pollTimer,
+      dispatch_walltime(NULL, (int64_t)((deadline - now) * NSEC_PER_SEC)),
+      DISPATCH_TIME_FOREVER, AUBPollLeeway);
 }
 
 - (void)poll {
-  double now = AUBNow();
-  bool wantsUsage = now >= _pollUsageAt;
-  bool wantsStatus = now >= _pollStatusAt;
-  // Re-arming is the merge's job. Doing it here as well would busy-loop against
-  // a fetch that has not come back yet, since its attempt clock only advances
-  // when the fetch starts.
+  // A half within the leeway of its own deadline rides along with the one that
+  // is due. Letting the two clocks drift apart would buy a second helper
+  // process, which costs more than fetching one half slightly early.
+  double horizon = AUBNow() + (double)(AUBPollLeeway / NSEC_PER_SEC);
+  bool wantsUsage = horizon >= _pollUsageAt;
+  bool wantsStatus = horizon >= _statusAttemptedAt + AUBPollInterval;
   if (wantsUsage || wantsStatus)
     [self refreshUsage:wantsUsage status:wantsStatus];
-  else
-    [self schedulePoll];
+  [self schedulePoll];
 }
 
 /// Fetches the requested halves in a single helper run. Each half costs a full
@@ -594,9 +597,10 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
                                    }];
 
   double now = AUBNow();
-  bool usageStale = !_snapshot.valid || now - _snapshot.fetchedAt > 60;
-  bool statusStale =
-      !_snapshot.hasStatus || now - _snapshot.statusFetchedAt > 60;
+  bool usageStale =
+      !_snapshot.valid || now - _snapshot.fetchedAt > AUBPanelFreshness;
+  bool statusStale = !_snapshot.hasStatus ||
+                     now - _snapshot.statusFetchedAt > AUBPanelFreshness;
   if (usageStale || statusStale)
     [self refreshUsage:usageStale status:statusStale];
 }
