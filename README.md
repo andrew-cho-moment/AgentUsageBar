@@ -42,15 +42,24 @@ pid.
 
 ## Refresh behavior
 
-The app loads its last validated 8,480-byte snapshot at launch. A normal login launch
-starts no fetch helper, touches no credential, and opens no network connection. A first
-launch with no cache fetches once to seed it.
+The app loads its last validated 8,480-byte snapshot at launch and renders it without a
+fetch. A first launch with no cache fetches once to seed it, and a launch whose cached
+snapshot is already older than the poll interval fetches as soon as the poll arms, which
+is the usual case after the machine has been off.
 
-The app runs no timers at all, so it never wakes on its own. Usage and Claude service
-status both refresh when the panel opens with data older than 60 seconds, and when the
-user selects Refresh. Between those moments the menu bar shows the last fetched values,
-which can be arbitrarily old. Service status arrives from a separate status-only helper
-that touches no credential and no provider usage API.
+Usage and Claude service status both refresh when the panel opens with data older than 60
+seconds, when the user selects Refresh, and on a background poll every 5 minutes. Service
+status arrives from a separate status-only helper that touches no credential and no
+provider usage API.
+
+The poll is one non-strict `dispatch_walltime` timer at background QoS with 60 seconds of
+leeway, so the kernel folds its wake into one it was already making, and it never wakes a
+sleeping machine. Its deadline is wall clock, so a machine that slept past the deadline
+polls on wake rather than drifting by the length of the sleep. The cadence counts from the
+attempt rather than the result, which keeps an unreachable provider on the same 5-minute
+spacing instead of a retry loop. When a rate window reports a reset within the interval,
+the poll moves to just past that boundary so the percentage drops when the window actually
+rolls over.
 
 This design trades short refresh-time process launches and fresh network connections for
 the smallest persistent memory footprint.
