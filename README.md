@@ -48,18 +48,20 @@ snapshot is already older than the poll interval fetches as soon as the poll arm
 is the usual case after the machine has been off.
 
 Usage and Claude service status both refresh when the panel opens with data older than 60
-seconds, when the user selects Refresh, and on a background poll every 5 minutes. Service
-status arrives from a separate status-only helper that touches no credential and no
-provider usage API.
+seconds, when the user selects Refresh, and on a background poll every 5 minutes. A run
+that wants both halves fetches them in one helper process, which overlaps the two network
+calls; changing which services are tracked runs a status-only helper that touches no
+credential and no provider usage API.
 
-The poll is one non-strict `dispatch_walltime` timer at background QoS with 60 seconds of
-leeway, so the kernel folds its wake into one it was already making, and it never wakes a
-sleeping machine. Its deadline is wall clock, so a machine that slept past the deadline
-polls on wake rather than drifting by the length of the sleep. The cadence counts from the
-attempt rather than the result, which keeps an unreachable provider on the same 5-minute
-spacing instead of a retry loop. When a rate window reports a reset within the interval,
-the poll moves to just past that boundary so the percentage drops when the window actually
-rolls over.
+The poll is one non-strict `dispatch_walltime` timer with 60 seconds of leeway, so the
+kernel folds its wake into one it was already making, and it never wakes a sleeping
+machine. Its deadline is wall clock, so a machine that slept past the deadline polls on
+wake rather than drifting by the length of the sleep. The cadence counts from the attempt
+rather than the result, which keeps an unreachable provider on the same 5-minute
+spacing instead of a retry loop, and a failed poll leaves the last numbers in the menu bar
+rather than replacing them with an error the user did not ask for. When a meter reports a
+reset within the interval, the poll moves to just past that boundary so the percentage
+drops when the window actually rolls over.
 
 This design trades short refresh-time process launches and fresh network connections for
 the smallest persistent memory footprint.

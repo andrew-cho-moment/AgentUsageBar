@@ -352,10 +352,13 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
       _pollUsageAt = AUBPullToReset(_pollUsageAt, now, window->hasReset,
                                     window->resetsAt);
     }
-    _pollUsageAt = AUBPullToReset(_pollUsageAt, now, provider->budget.hasReset,
-                                  provider->budget.resetsAt);
+    _pollUsageAt =
+        AUBPullToReset(_pollUsageAt, now,
+                       provider->budget.present && provider->budget.hasReset,
+                       provider->budget.resetsAt);
   }
   double deadline = MIN(_pollUsageAt, _statusAttemptedAt + AUBPollInterval);
+  deadline = MIN(deadline, now + AUBPollInterval);
   dispatch_source_set_timer(
       _pollTimer,
       dispatch_walltime(NULL, (int64_t)((deadline - now) * NSEC_PER_SEC)),
@@ -433,7 +436,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     _snapshot.claude = fetched->claude;
     _snapshot.codex = fetched->codex;
     [self applyBudgetOverrides];
-    [self render];
     merged = true;
   }
   // A tracking change while this fetch was in flight makes its status half
@@ -455,10 +457,18 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 
   if (merged) {
     AUBSaveSnapshot(&_snapshot);
+    // Rendering on either half is what takes a failed poll's tooltip back down:
+    // a status-only success would otherwise leave it up until usage next
+    // succeeded.
+    [self render];
     [_usagePanelView reload];
     [self updatePanelSize];
   } else if (!succeeded && wantedUsage) {
-    _statusItem.button.title = @"!";
+    // The last numbers stay up. They are still the best available, the panel's
+    // Last updated line carries their age, and a poll the user did not ask for
+    // now fails on its own at every wake before the network is back.
+    if (!_snapshot.valid)
+      _statusItem.button.title = @"!";
     _statusItem.button.toolTip = @"Usage refresh failed";
   }
 
