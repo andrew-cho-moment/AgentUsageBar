@@ -38,10 +38,15 @@ final class ClaudeProvider: UsageProvider, Sendable {
         case weeklyScoped = "weekly_scoped"
     }
 
-    private enum SpendSeverity: String, Decodable, Sendable {
+    /// Only `limit_reached` changes behaviour; the rest of the ladder is inert and listed
+    /// so a routine response raises no unrecognized warning. Decoded through `APIEnum`
+    /// because a strict decode of this one peripheral field cost every window and the
+    /// budget when `critical` appeared. A renamed `limit_reached` would read as `.active`.
+    private enum SpendSeverity: String, Sendable {
         case none
         case normal
         case warning
+        case critical
         case limitReached = "limit_reached"
     }
 
@@ -59,7 +64,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
                 let model: Model?
             }
 
-            let kind: LimitKind
+            let kind: APIEnum<LimitKind>
             let percent: APINumber?
             let resetsAt: String?
             let isActive: APIBool?
@@ -88,7 +93,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
             let used: MoneyAmount?
             let disabledReason: String?
             let enabled: APIBool?
-            let severity: SpendSeverity?
+            let severity: APIEnum<SpendSeverity>?
 
             private enum CodingKeys: String, CodingKey {
                 case limit, used, enabled, severity
@@ -118,13 +123,55 @@ final class ClaudeProvider: UsageProvider, Sendable {
             }
         }
 
-        let limits: [Limit]?
+        let limits: [Limit]
         let spend: Spend?
         let extraUsage: ExtraUsage?
+
+        /// Halves of the response this build could not read, named for the panel.
+        let undecodable: [String]
 
         private enum CodingKeys: String, CodingKey {
             case limits, spend
             case extraUsage = "extra_usage"
+        }
+
+        /// Decodes `limits`, `spend` and `extra_usage` in isolation. `limits` carries the
+        /// windows this app exists to show and the other two carry the budget, yet a
+        /// single throw anywhere under one of them used to fail the whole response and
+        /// cost the others — a new `spend.severity` string was enough. Entries are
+        /// decoded one at a time for the same reason, so an unreadable window drops
+        /// itself alone. What the strict decode bought was a fatal error naming no
+        /// field; each half now reports itself through `unrecognized` instead.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            var undecodable: [String] = []
+
+            let entries: [APIElement<Limit>] =
+                Self.isolate(container, .limits, "limits", into: &undecodable) ?? []
+            limits = entries.compactMap(\.value)
+            if entries.count > limits.count {
+                undecodable.append("\(entries.count - limits.count) unreadable limits")
+            }
+
+            spend = Self.isolate(container, .spend, "spend", into: &undecodable)
+            extraUsage = Self.isolate(container, .extraUsage, "extra_usage", into: &undecodable)
+            self.undecodable = undecodable
+        }
+
+        /// Absent and unreadable are different outcomes: only the second is reported.
+        private static func isolate<T: Decodable>(
+            _ container: KeyedDecodingContainer<CodingKeys>,
+            _ key: CodingKeys,
+            _ label: String,
+            into undecodable: inout [String]
+        ) -> T? {
+            guard container.contains(key), (try? container.decodeNil(forKey: key)) == false
+            else { return nil }
+            guard let value = try? container.decode(T.self, forKey: key) else {
+                undecodable.append("\(label) unreadable")
+                return nil
+            }
+            return value
         }
     }
 
@@ -194,18 +241,27 @@ final class ClaudeProvider: UsageProvider, Sendable {
         }
         if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized }
         guard http.statusCode == 200 else { throw UsageError.http(status: http.statusCode) }
+        return try Self.snapshot(from: data, planLabel: Self.readPlanLabel())
+    }
+
+    /// Split from the transport so a captured body decodes without the Keychain or the
+    /// network, which is what `tests/ClaudeDecodeTests.swift` drives.
+    static func snapshot(from data: Data, planLabel: String?) throws -> ProviderSnapshot {
         guard let response = try? JSONDecoder().decode(UsageResponse.self, from: data) else {
             throw UsageError.malformed(field: "body")
         }
 
-        var unrecognized: [String] = []
-        let windows = Self.decodeWindows(response.limits ?? [], unrecognized: &unrecognized)
+        var unrecognized = response.undecodable
+        let windows = decodeWindows(response.limits, unrecognized: &unrecognized)
+        if let value = response.spend?.severity?.unrecognized {
+            unrecognized.append("spend severity \(value)")
+        }
 
         return ProviderSnapshot(
             provider: .claude,
-            planLabel: Self.readPlanLabel(),
+            planLabel: planLabel,
             windows: windows,
-            budgetReading: Self.decodeBudget(response),
+            budgetReading: decodeBudget(response),
             creditBalanceMinor: nil,
             creditUnit: nil,
             unrecognized: unrecognized
@@ -228,7 +284,12 @@ final class ClaudeProvider: UsageProvider, Sendable {
             let resetsAt = DateParse.iso(entry.resetsAt)
             let isActive = entry.isActive?.value ?? false
 
-            switch entry.kind {
+            guard let kind = entry.kind.value else {
+                unrecognized.append("limit kind \(entry.kind.raw)")
+                continue
+            }
+
+            switch kind {
             case .session:
                 windows.append(
                     RateWindow(
@@ -294,7 +355,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
             state: state(
                 disabledReason: spend.disabledReason,
                 enabled: spend.enabled?.value,
-                limitReached: spend.severity == .limitReached),
+                limitReached: spend.severity?.value == .limitReached),
             resetsAt: nil
         )
     }

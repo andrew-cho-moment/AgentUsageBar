@@ -65,6 +65,18 @@ static bool AUBAppend(char *destination, size_t capacity, const char *source) {
   return true;
 }
 
+/// Overwrites the tail of a full buffer with an ellipsis, so a truncated diagnostics
+/// list is visibly truncated. `capacity` counts the NUL.
+static void AUBMarkTruncated(char *destination, size_t capacity) {
+  static const char marker[] = ", ...";
+  const size_t markerLength = sizeof(marker) - 1;
+  if (capacity <= markerLength)
+    return;
+  size_t used = strlen(destination);
+  size_t start = used + markerLength < capacity ? used : capacity - 1 - markerLength;
+  memcpy(destination + start, marker, markerLength + 1);
+}
+
 static size_t AUBFields(char *line, char **fields, size_t capacity) {
   size_t count = 0;
   char *cursor = line;
@@ -298,10 +310,15 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
       if (count != 3)
         return false;
       AUBProviderState *provider = AUBProvider(&parsed, fields[1]);
-      if (provider == NULL || provider->status != AUBProviderStatusReady ||
-          !AUBAppend(provider->unrecognized, sizeof(provider->unrecognized),
-                     fields[2])) {
+      if (provider == NULL || provider->status != AUBProviderStatusReady)
         return false;
+      // These strings are diagnostics about the response, so a full buffer must not
+      // discard an otherwise valid refresh. Mark the truncation instead, or the panel
+      // would read as a complete list of what the API changed.
+      if (!AUBAppend(provider->unrecognized, sizeof(provider->unrecognized),
+                     fields[2])) {
+        AUBMarkTruncated(provider->unrecognized,
+                         sizeof(provider->unrecognized));
       }
       continue;
     }
