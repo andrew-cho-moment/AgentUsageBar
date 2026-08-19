@@ -69,16 +69,49 @@ struct APIBool: Decodable, Sendable {
 /// down with it, and every window and budget in it.
 struct APIEnum<Value: RawRepresentable & Sendable>: Decodable, Sendable
 where Value.RawValue == String {
+    /// `raw` reaches a fixed-size diagnostics buffer in the menu bar app, and this is
+    /// the one place wire-controlled text enters it. Truncating here keeps a long value
+    /// from overflowing that buffer, which costs the whole refresh.
+    private static var maximumRawLength: Int { 48 }
+
     let value: Value?
     let raw: String
 
+    /// Accepts a number or boolean as well as a string, matching `APINumber` and
+    /// `APIBool`: an enum that moves to an integer ladder upstream should surface as an
+    /// unrecognized value, not throw and take the response down.
     init(from decoder: Decoder) throws {
-        raw = try decoder.singleValueContainer().decode(String.self)
-        value = Value(rawValue: raw)
+        let container = try decoder.singleValueContainer()
+        let text: String
+        if let string = try? container.decode(String.self) {
+            text = string
+        } else if let number = try? container.decode(Double.self), number.isFinite {
+            text = String(number)
+        } else if let boolean = try? container.decode(Bool.self) {
+            text = boolean ? "true" : "false"
+        } else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected a string, number, or boolean")
+        }
+        // Matched before truncating, so a long legitimate value still names its case.
+        value = Value(rawValue: text)
+        raw = String(text.prefix(Self.maximumRawLength))
     }
 
     /// The wire string, only when this build has no case for it.
     var unrecognized: String? { value == nil ? raw : nil }
+}
+
+/// One array element, decoded without taking the array down with it. A plain `[Value]`
+/// is all-or-nothing: one unreadable entry throws for every entry. Decoding
+/// `[APIElement<Value>]` keeps the entries this build understands.
+struct APIElement<Value: Decodable & Sendable>: Decodable, Sendable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
+    }
 }
 
 enum DateParse {

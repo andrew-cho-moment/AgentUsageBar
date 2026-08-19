@@ -52,15 +52,6 @@ enum BudgetScope: String, Sendable {
     case account
     case group
     case orgService = "org_service"
-
-    /// Rejects unrecognized values rather than coercing them, so a new scope from
-    /// the API surfaces immediately instead of being silently mislabelled as personal.
-    init(apiValue: String) throws {
-        guard let parsed = BudgetScope(rawValue: apiValue) else {
-            throw UsageError.unrecognizedEnum(field: "limit_type", value: apiValue)
-        }
-        self = parsed
-    }
 }
 
 enum BudgetState: Sendable {
@@ -112,7 +103,6 @@ enum UsageError: LocalizedError {
     case unauthorized
     case http(status: Int)
     case malformed(field: String)
-    case unrecognizedEnum(field: String, value: String)
     case keychain
 
     var errorDescription: String? {
@@ -125,8 +115,6 @@ enum UsageError: LocalizedError {
             return "HTTP \(status)"
         case .malformed(let field):
             return "Unexpected response (\(field))"
-        case .unrecognizedEnum(let field, let value):
-            return "Unrecognized \(field): \(value)"
         case .keychain:
             return "Keychain access failed"
         }

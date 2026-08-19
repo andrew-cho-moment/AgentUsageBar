@@ -25,8 +25,6 @@ SIGNING_IDENTITY="AgentUsageBar Dev"
 # version which wrote it.
 DEAD_KEYS=(
     last_effective_indicator
-    claude_plan_label
-    claude_plan_label_stamp
 )
 
 cd "$(dirname "$0")"

@@ -90,6 +90,15 @@ xcrun clang \
     tests/SnapshotCacheTests.c \
     SnapshotCache.c
 build/tests/SnapshotCacheTests
+swiftc \
+    -target arm64-apple-macos14.0 \
+    -warnings-as-errors \
+    -o build/tests/ClaudeDecodeTests \
+    tests/ClaudeDecodeTests.swift \
+    Models.swift \
+    FetcherSupport.swift \
+    Providers/ClaudeProvider.swift
+build/tests/ClaudeDecodeTests
 xcrun clang \
     -arch arm64 \
     -mmacosx-version-min=14.0 \

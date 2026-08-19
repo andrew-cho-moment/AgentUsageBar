@@ -80,6 +80,48 @@ int main(int argc, char **argv) {
             "S\tnone\tOperational\tTracks Claude\t1\nD\t1\n",
             AUBFetcherModeAll, false);
 
+  // A provider reports one U record per API field it did not recognize, so the count
+  // is set by the response rather than by this app. Overflowing the fixed buffer has
+  // to cost the overflowing text, never the refresh that carried it.
+  {
+    char fixture[4096];
+    size_t offset = (size_t)snprintf(fixture, sizeof(fixture),
+                                     "V\t1\nP\tclaude\tready\tPro\n");
+    for (int index = 0; index < 24; index++) {
+      offset += (size_t)snprintf(fixture + offset, sizeof(fixture) - offset,
+                                 "U\tclaude\tunrecognized field number %d\n",
+                                 index);
+    }
+    snprintf(fixture + offset, sizeof(fixture) - offset,
+             "P\tcodex\tsigned_out\t\nD\t1\n");
+
+    AUBSnapshot overflowed = {0};
+    checks++;
+    if (!AUBParseFetcherOutput(fixture, AUBFetcherModeUsage, &overflowed)) {
+      fprintf(stderr, "overflowing unrecognized text rejected the refresh\n");
+      failures++;
+    } else {
+      checks++;
+      const char *text = overflowed.claude.unrecognized;
+      size_t length = strlen(text);
+      if (length >= AUBUnrecognizedCapacity) {
+        fprintf(stderr, "unrecognized buffer overran: %zu bytes\n", length);
+        failures++;
+      }
+      checks++;
+      if (length < 5 || strcmp(text + length - 5, ", ...") != 0) {
+        fprintf(stderr, "truncation was not marked: %s\n", text);
+        failures++;
+      }
+      checks++;
+      if (overflowed.claude.windowCount != 0 ||
+          overflowed.claude.status != AUBProviderStatusReady) {
+        fprintf(stderr, "provider state lost alongside the truncation\n");
+        failures++;
+      }
+    }
+  }
+
   AUBSnapshot snapshot = {0};
   if (AUBRunFetcher(argv[1], AUBFetcherModeUsage, &snapshot)) {
     fprintf(stderr, "oversized helper output was accepted\n");

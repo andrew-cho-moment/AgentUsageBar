@@ -136,10 +136,10 @@ cd app
 ./build.sh
 ```
 
-The build runs twenty-two deterministic protocol and cache tests, compiles size-optimized
-arm64 binaries with full link-time optimization, strips local symbols, signs every helper
-and the app, and verifies the nested signature. The result is
-`app/build/AgentUsageBar.app`.
+The build runs thirty-nine deterministic protocol, cache and response-decoding tests,
+compiles size-optimized arm64 binaries with full link-time optimization, strips local
+symbols, signs every helper and the app, and verifies the nested signature. The result
+is `app/build/AgentUsageBar.app`.
 
 When the `AgentUsageBar Dev` identity exists, the build uses it automatically. Otherwise
 it produces an ad-hoc build. Set `CODESIGN_IDENTITY` to use a Developer ID or another
@@ -162,4 +162,6 @@ providers, unknown enum values, out-of-order records, oversized output, truncate
 and invalid numeric ranges before replacing its snapshot.
 
 Both providers use internal endpoints that can change. The protocol and provider decoders
-surface unexpected values instead of silently treating new states as valid.
+surface unexpected values instead of silently treating new states as valid, and each part
+of a response is decoded in isolation so a surprise in one cannot cost the others: a new
+`spend.severity` string reports itself and leaves every rate-limit window standing.
