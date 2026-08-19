@@ -42,6 +42,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
         case none
         case normal
         case warning
+        case critical
         case limitReached = "limit_reached"
     }
 
