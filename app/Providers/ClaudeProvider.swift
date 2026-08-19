@@ -38,38 +38,16 @@ final class ClaudeProvider: UsageProvider, Sendable {
         case weeklyScoped = "weekly_scoped"
     }
 
-    /// The API keeps extending this ladder — `critical` landed above `warning` — and the
-    /// value drives one boolean. An unmapped tier is kept as its raw string so it reaches
-    /// `ProviderSnapshot.unrecognized` instead of failing the whole response, which is
-    /// what a strict decode of one peripheral field did to every window and the budget.
-    private enum SpendSeverity: Decodable, Sendable {
+    /// Only `limit_reached` changes behaviour; the rest of the ladder is inert and listed
+    /// so a routine response raises no unrecognized warning. Decoded through `APIEnum`
+    /// because a strict decode of this one peripheral field cost every window and the
+    /// budget when `critical` appeared. A renamed `limit_reached` would read as `.active`.
+    private enum SpendSeverity: String, Sendable {
         case none
         case normal
         case warning
         case critical
-        case limitReached
-        case unrecognized(String)
-
-        init(from decoder: any Decoder) throws {
-            switch try decoder.singleValueContainer().decode(String.self) {
-            case "none": self = .none
-            case "normal": self = .normal
-            case "warning": self = .warning
-            case "critical": self = .critical
-            case "limit_reached": self = .limitReached
-            case let other: self = .unrecognized(other)
-            }
-        }
-
-        var isLimitReached: Bool {
-            if case .limitReached = self { return true }
-            return false
-        }
-
-        var unrecognizedValue: String? {
-            if case .unrecognized(let value) = self { return value }
-            return nil
-        }
+        case limitReached = "limit_reached"
     }
 
     private struct UsageResponse: Decodable, Sendable {
@@ -115,7 +93,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
             let used: MoneyAmount?
             let disabledReason: String?
             let enabled: APIBool?
-            let severity: SpendSeverity?
+            let severity: APIEnum<SpendSeverity>?
 
             private enum CodingKeys: String, CodingKey {
                 case limit, used, enabled, severity
@@ -227,7 +205,10 @@ final class ClaudeProvider: UsageProvider, Sendable {
 
         var unrecognized: [String] = []
         let windows = Self.decodeWindows(response.limits ?? [], unrecognized: &unrecognized)
-        let budget = Self.decodeBudget(response, unrecognized: &unrecognized)
+        if let value = response.spend?.severity?.unrecognized {
+            unrecognized.append("spend severity \(value)")
+        }
+        let budget = Self.decodeBudget(response)
 
         return ProviderSnapshot(
             provider: .claude,
@@ -297,27 +278,16 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// `{amount_minor, currency, exponent}` triples, over `extra_usage`, which requires
     /// assuming cents. Falls back to `extra_usage` so an account served only the older
     /// shape still gets a budget.
-    private static func decodeBudget(_ response: UsageResponse, unrecognized: inout [String])
-        -> BudgetReading?
-    {
-        if let reading = decodeSpendBudget(response.spend, unrecognized: &unrecognized) {
-            return reading
-        }
+    private static func decodeBudget(_ response: UsageResponse) -> BudgetReading? {
+        if let reading = decodeSpendBudget(response.spend) { return reading }
         return decodeExtraUsageBudget(response.extraUsage)
     }
 
-    private static func decodeSpendBudget(
-        _ spend: UsageResponse.Spend?,
-        unrecognized: inout [String]
-    ) -> BudgetReading? {
+    private static func decodeSpendBudget(_ spend: UsageResponse.Spend?) -> BudgetReading? {
         guard let spend else { return nil }
         let limitMinor = spend.limit?.amountMinor?.roundedInt
         let spentMinor = spend.used?.amountMinor?.roundedInt
         guard limitMinor != nil || spentMinor != nil else { return nil }
-
-        if let value = spend.severity?.unrecognizedValue {
-            unrecognized.append("spend severity \(value)")
-        }
 
         let exponent =
             spend.limit?.exponent?.roundedInt
@@ -333,7 +303,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
             state: state(
                 disabledReason: spend.disabledReason,
                 enabled: spend.enabled?.value,
-                limitReached: spend.severity?.isLimitReached ?? false),
+                limitReached: spend.severity?.value == .limitReached),
             resetsAt: nil
         )
     }

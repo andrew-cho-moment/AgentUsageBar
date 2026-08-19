@@ -63,6 +63,24 @@ struct APIBool: Decodable, Sendable {
     }
 }
 
+/// An API enum whose value set the endpoint still extends. Decoding keeps the wire
+/// string when it names no case, so a new value reaches `ProviderSnapshot.unrecognized`
+/// instead of throwing: a strict decode of one peripheral field takes the whole response
+/// down with it, and every window and budget in it.
+struct APIEnum<Value: RawRepresentable & Sendable>: Decodable, Sendable
+where Value.RawValue == String {
+    let value: Value?
+    let raw: String
+
+    init(from decoder: Decoder) throws {
+        raw = try decoder.singleValueContainer().decode(String.self)
+        value = Value(rawValue: raw)
+    }
+
+    /// The wire string, only when this build has no case for it.
+    var unrecognized: String? { value == nil ? raw : nil }
+}
+
 enum DateParse {
     private static let isoFractional = Date.ISO8601FormatStyle(includingFractionalSeconds: true)
     private static let isoPlain = Date.ISO8601FormatStyle(includingFractionalSeconds: false)
