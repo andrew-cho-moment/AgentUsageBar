@@ -78,6 +78,15 @@ AgentUsageBar reads credentials already owned by the provider CLIs:
 The app stores no credentials. Codex token refreshes remain in the helper's memory and do
 not modify the CLI file.
 
+A provider whose CLI this machine has never had gets no mention anywhere in the app: no
+menu-bar segment, no panel row, no sign-in hint, and for Claude no service-status section
+and no service-tracking settings. The fetcher decides that from the state each CLI writes
+on its first run, `~/.claude.json` or `~/.claude` for Claude Code and `~/.codex` for Codex,
+rather than from the binary, because an app launched at login inherits no shell `PATH` and
+would read a machine that runs an agent daily as having none. An installed CLI that is
+merely signed out keeps its `claude login` or `codex login` hint, which is the distinction
+the `not_installed` provider state carries through the protocol.
+
 The fetcher reads the Claude item by running `/usr/bin/security find-generic-password`,
 which never raises a consent prompt. Claude Code writes that item with
 `security add-generic-password -U` and passes neither `-T` nor `-A`, so every token refresh
@@ -92,6 +101,7 @@ leaves the app with no code that links `Security.framework`.
 - Codex rate-limit windows, model meters, credit balances, and reported budgets
 - User-supplied monthly limits when a provider reports spend without a limit
 - Per-service Claude status tracking
+- Only the providers installed on the machine, with the rest silent
 - System, Dark, and Light appearance modes
 - Global Command-U panel shortcut
 - Start at login by default, with a saved opt-out
@@ -136,7 +146,7 @@ cd app
 ./build.sh
 ```
 
-The build runs thirty-nine deterministic protocol, cache and response-decoding tests,
+The build runs fifty-two deterministic protocol, cache and response-decoding tests,
 compiles size-optimized arm64 binaries with full link-time optimization, strips local
 symbols, signs every helper and the app, and verifies the nested signature. The result
 is `app/build/AgentUsageBar.app`.

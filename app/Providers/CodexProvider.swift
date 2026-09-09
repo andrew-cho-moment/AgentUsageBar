@@ -14,11 +14,21 @@ final class CodexProvider: UsageProvider, Sendable {
 
     // MARK: Credentials
 
-    private static var authPath: String {
-        let home =
-            ProcessInfo.processInfo.environment["CODEX_HOME"]
+    private static var home: String {
+        ProcessInfo.processInfo.environment["CODEX_HOME"]
             ?? (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
-        return (home as NSString).appendingPathComponent("auth.json")
+    }
+
+    private static var authPath: String {
+        (home as NSString).appendingPathComponent("auth.json")
+    }
+
+    /// The Codex CLI creates this directory on its first run and keeps its config,
+    /// history and sessions there, so its absence is what tells the app Codex was never
+    /// installed here. Probing for the `codex` binary would not work: a menu-bar app
+    /// launched at login inherits no shell `PATH`.
+    private static var isInstalled: Bool {
+        FileManager.default.fileExists(atPath: home)
     }
 
     private struct StoredCredentials: Decodable {
@@ -167,7 +177,9 @@ final class CodexProvider: UsageProvider, Sendable {
             let credentials = try? JSONDecoder().decode(StoredCredentials.self, from: data),
             !credentials.accessToken.isEmpty
         else {
-            throw UsageError.notLoggedIn(.codex)
+            // An install with no usable `auth.json` earns a `codex login` hint; a machine
+            // with no Codex at all earns no mention of Codex anywhere in the UI.
+            throw isInstalled ? UsageError.notLoggedIn(.codex) : .notInstalled(.codex)
         }
         return credentials
     }

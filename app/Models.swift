@@ -100,6 +100,11 @@ enum WindowID {
 
 enum UsageError: LocalizedError {
     case notLoggedIn(Provider)
+    /// The provider's CLI is absent from this machine, which the app reports as
+    /// its own state rather than as a sign-out: a machine that never had Codex
+    /// should hear nothing about Codex, while one that is merely signed out
+    /// gets told which command signs it back in.
+    case notInstalled(Provider)
     case unauthorized
     case http(status: Int)
     case malformed(field: String)
@@ -109,6 +114,8 @@ enum UsageError: LocalizedError {
         switch self {
         case .notLoggedIn(let p):
             return "Not signed in to \(p.displayName)"
+        case .notInstalled(let p):
+            return "\(p.displayName) is not installed"
         case .unauthorized:
             return "Sign-in expired"
         case .http(let status):

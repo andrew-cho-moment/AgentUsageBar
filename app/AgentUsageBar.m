@@ -320,6 +320,13 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   [self refreshUsage:false status:true];
 }
 
+/// status.claude.com describes Claude's services and nothing else, so a machine
+/// with no Claude Code never fetches that half, never renders it, and never
+/// lets its deadline pull the poll forward.
+- (bool)tracksClaudeStatus {
+  return AUBProviderInstalled(&_snapshot.claude);
+}
+
 /// Arms the next poll, one shot, so a fetch in flight can never be joined by a
 /// second one. An outstanding fetch owns the next arming: `merge:` runs it
 /// whatever the fetch returned, which is also what stops this from re-arming a
@@ -357,7 +364,12 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
                        provider->budget.present && provider->budget.hasReset,
                        provider->budget.resetsAt);
   }
-  double deadline = MIN(_pollUsageAt, _statusAttemptedAt + AUBPollInterval);
+  double deadline = _pollUsageAt;
+  // A suppressed half never records an attempt, so a machine with no Claude
+  // Code has to leave the status deadline out of this rather than re-arm on a
+  // deadline that is permanently overdue.
+  if ([self tracksClaudeStatus])
+    deadline = MIN(deadline, _statusAttemptedAt + AUBPollInterval);
   deadline = MIN(deadline, now + AUBPollInterval);
   dispatch_source_set_timer(
       _pollTimer,
@@ -371,7 +383,8 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   // process, which costs more than fetching one half slightly early.
   double horizon = AUBNow() + (double)(AUBPollLeeway / NSEC_PER_SEC);
   bool wantsUsage = horizon >= _pollUsageAt;
-  bool wantsStatus = horizon >= _statusAttemptedAt + AUBPollInterval;
+  bool wantsStatus = [self tracksClaudeStatus] &&
+                     horizon >= _statusAttemptedAt + AUBPollInterval;
   if (wantsUsage || wantsStatus)
     [self refreshUsage:wantsUsage status:wantsStatus];
   [self schedulePoll];
@@ -381,6 +394,8 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 /// dyld load of Foundation and CFNetwork in the helper, so asking one process
 /// for both is worth more than any saving inside the app.
 - (void)refreshUsage:(bool)wantsUsage status:(bool)wantsStatus {
+  if (wantsStatus && ![self tracksClaudeStatus])
+    wantsStatus = false;
   if (wantsUsage && _usageRefreshing)
     wantsUsage = false;
   if (wantsStatus && _statusRefreshing) {

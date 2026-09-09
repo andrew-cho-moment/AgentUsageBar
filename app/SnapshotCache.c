@@ -50,7 +50,7 @@ static bool AUBBudgetValid(const AUBBudgetReading *budget) {
 
 static bool AUBProviderValid(const AUBProviderState *provider) {
   if (provider->status == AUBProviderStatusPending ||
-      provider->status > AUBProviderStatusFailed ||
+      provider->status > AUBProviderStatusNotInstalled ||
       provider->windowCount > AUBMaxWindows ||
       !AUBTerminated(provider->plan, sizeof(provider->plan)) ||
       !AUBTerminated(provider->error, sizeof(provider->error)) ||

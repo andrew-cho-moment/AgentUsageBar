@@ -31,6 +31,11 @@ int main(void) {
   AUBExpect("components without status", &snapshot, false);
   snapshot.statusComponentCount = 0;
 
+  // A machine that will never have Codex caches that fact, so the next launch
+  // renders without waiting on a fetch that can only report the same thing.
+  snapshot.codex.status = AUBProviderStatusNotInstalled;
+  AUBExpect("not-installed provider", &snapshot, true);
+
   snapshot.claude.status = AUBProviderStatusReady;
   snapshot.claude.windowCount = 1;
   strcpy(snapshot.claude.windows[0].id, "session");
@@ -42,6 +47,6 @@ int main(void) {
 
   if (failures != 0)
     return 1;
-  printf("5 cache validation tests passed\n");
+  printf("6 cache validation tests passed\n");
   return 0;
 }

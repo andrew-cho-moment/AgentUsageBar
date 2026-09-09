@@ -378,18 +378,38 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                      AUBProviderVisible(&_snapshot->codex);
 
   if (!hasProvider) {
-    if (draw)
-      AUBDrawText(@"👋 No providers signed in", AUBMargin, y, _subheadline);
-    y += 22;
+    // Each hint names a command the user can actually run, so a provider whose
+    // CLI is not on this machine contributes no line at all.
+    bool claudeInstalled = AUBProviderInstalled(&_snapshot->claude);
+    bool codexInstalled = AUBProviderInstalled(&_snapshot->codex);
     if (draw) {
-      AUBDrawText(@"Run `claude login` to track Claude usage.", AUBMargin, y,
-                  _caption);
+      AUBDrawText(claudeInstalled || codexInstalled
+                      ? @"👋 No providers signed in"
+                      : @"👋 No agent CLI on this Mac",
+                  AUBMargin, y, _subheadline);
     }
-    y += 18;
-    if (draw)
-      AUBDrawText(@"Run `codex login` to track Codex usage.", AUBMargin, y,
-                  _caption);
-    y += 18;
+    y += 22;
+    if (claudeInstalled) {
+      if (draw) {
+        AUBDrawText(@"Run `claude login` to track Claude usage.", AUBMargin, y,
+                    _caption);
+      }
+      y += 18;
+    }
+    if (codexInstalled) {
+      if (draw) {
+        AUBDrawText(@"Run `codex login` to track Codex usage.", AUBMargin, y,
+                    _caption);
+      }
+      y += 18;
+    }
+    if (!claudeInstalled && !codexInstalled) {
+      if (draw) {
+        AUBDrawText(@"Install Claude Code or Codex to track usage.", AUBMargin,
+                    y, _caption);
+      }
+      y += 18;
+    }
   } else {
     for (AUBProviderKind kind = AUBProviderKindClaude;
          kind <= AUBProviderKindCodex; kind++) {
@@ -397,7 +417,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
   }
 
-  if (_snapshot->hasStatus) {
+  if (_snapshot->hasStatus && AUBProviderInstalled(&_snapshot->claude)) {
     y += 2;
     if (draw) {
       [NSColor.separatorColor setFill];
@@ -518,8 +538,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y += 20;
   if (budgetCandidateCount == 0) {
     if (draw) {
-      AUBDrawText(@"Both providers report their own limits.", AUBMargin + 10, y,
-                  _caption2);
+      AUBDrawText(@"Each signed-in provider reports its own limit.",
+                  AUBMargin + 10, y, _caption2);
     }
     y += 20;
   } else {
@@ -564,34 +584,38 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
   }
 
-  if (draw) {
-    [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-  }
-  y += 14;
-  if (draw) {
-    AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
-                _caption);
-  }
-  y += 18;
-  if (draw) {
-    AUBDrawText(@"At least one service must remain selected.", AUBMargin + 10,
-                y, _caption2);
-  }
-  y += 24;
-  for (uint8_t index = 0; index < _snapshot->statusComponentCount; index++) {
-    const AUBStatusComponent *component = &_snapshot->statusComponents[index];
+  // Which Claude services to watch is a setting only a machine that runs Claude
+  // Code has any use for.
+  if (AUBProviderInstalled(&_snapshot->claude)) {
     if (draw) {
-      AUBDrawCheckbox(component->tracked, AUBMargin + 10, y + 1);
-      AUBDrawText(AUBString(component->name), AUBMargin + 28, y, _caption2);
-      AUBDrawRight(AUBComponentStatusLabel(component->status),
-                   AUBWidth - AUBMargin - 10, y, _caption2);
-      [self
-          addAction:AUBActionToggleStatusComponent
-           argument:index
-               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 22)];
+      [NSColor.separatorColor setFill];
+      NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
+    }
+    y += 14;
+    if (draw) {
+      AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
+                  _caption);
+    }
+    y += 18;
+    if (draw) {
+      AUBDrawText(@"At least one service must remain selected.", AUBMargin + 10,
+                  y, _caption2);
     }
     y += 24;
+    for (uint8_t index = 0; index < _snapshot->statusComponentCount; index++) {
+      const AUBStatusComponent *component = &_snapshot->statusComponents[index];
+      if (draw) {
+        AUBDrawCheckbox(component->tracked, AUBMargin + 10, y + 1);
+        AUBDrawText(AUBString(component->name), AUBMargin + 28, y, _caption2);
+        AUBDrawRight(AUBComponentStatusLabel(component->status),
+                     AUBWidth - AUBMargin - 10, y, _caption2);
+        [self addAction:AUBActionToggleStatusComponent
+               argument:index
+                   rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12,
+                                   22)];
+      }
+      y += 24;
+    }
   }
 
   if (draw) {
