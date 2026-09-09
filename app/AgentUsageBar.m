@@ -176,7 +176,6 @@ static double AUBNow(void) {
   double _usageAttemptedAt;
   double _statusAttemptedAt;
   double _pollUsageAt;
-  double _pollStatusAt;
   bool _usageRefreshing;
   bool _statusRefreshing;
   bool _statusRefreshPending;
@@ -329,6 +328,15 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   return AUBProviderInstalled(&_snapshot.claude);
 }
 
+/// When the status half next falls due, or never on a machine that does not
+/// track it. Derived on every read rather than stored, because the callers that
+/// stamp `_statusAttemptedAt` do not all re-arm the poll, and a stored copy
+/// would then ask for a half that is already in flight.
+- (double)statusDueAt {
+  return [self tracksClaudeStatus] ? _statusAttemptedAt + AUBPollInterval
+                                   : INFINITY;
+}
+
 /// Arms the next poll, one shot, so a fetch in flight can never be joined by a
 /// second one. An outstanding fetch owns the next arming: `merge:` runs it
 /// whatever the fetch returned, which is also what stops this from re-arming a
@@ -358,20 +366,15 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     const AUBProviderState *provider = [self stateForKind:kind];
     for (uint8_t index = 0; index < provider->windowCount; index++) {
       const AUBWindow *window = &provider->windows[index];
-      _pollUsageAt = AUBPullToReset(_pollUsageAt, now, window->hasReset,
-                                    window->resetsAt);
+      _pollUsageAt =
+          AUBPullToReset(_pollUsageAt, now, window->hasReset, window->resetsAt);
     }
     _pollUsageAt =
         AUBPullToReset(_pollUsageAt, now,
                        provider->budget.present && provider->budget.hasReset,
                        provider->budget.resetsAt);
   }
-  // A half nobody fetches records no attempt, so its due time is never, rather
-  // than an attempt time of zero that leaves the deadline permanently overdue
-  // and re-arms the timer on every pass.
-  _pollStatusAt = [self tracksClaudeStatus] ? _statusAttemptedAt + AUBPollInterval
-                                            : INFINITY;
-  double deadline = MIN(_pollUsageAt, _pollStatusAt);
+  double deadline = MIN(_pollUsageAt, [self statusDueAt]);
   deadline = MIN(deadline, now + AUBPollInterval);
   dispatch_source_set_timer(
       _pollTimer,
@@ -385,7 +388,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   // process, which costs more than fetching one half slightly early.
   double horizon = AUBNow() + (double)(AUBPollLeeway / NSEC_PER_SEC);
   bool wantsUsage = horizon >= _pollUsageAt;
-  bool wantsStatus = horizon >= _pollStatusAt;
+  bool wantsStatus = horizon >= [self statusDueAt];
   if (wantsUsage || wantsStatus)
     [self refreshUsage:wantsUsage status:wantsStatus];
   [self schedulePoll];
@@ -475,7 +478,11 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   // machine that has no Claude.
   if (merged && ![self tracksClaudeStatus]) {
     _snapshot.hasStatus = false;
+    _snapshot.statusIndicator = AUBStatusIndicatorNone;
     _snapshot.statusFetchedAt = 0;
+    _snapshot.statusDescription[0] = '\0';
+    _snapshot.statusContext[0] = '\0';
+    memset(_snapshot.statusComponents, 0, sizeof(_snapshot.statusComponents));
     _snapshot.statusComponentCount = 0;
   }
 

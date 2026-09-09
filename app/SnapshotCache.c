@@ -83,6 +83,11 @@ bool AUBSnapshotValidForCache(const AUBSnapshot *snapshot) {
   }
   if (!snapshot->hasStatus)
     return snapshot->statusComponentCount == 0;
+  // status.claude.com describes Claude's services, so a snapshot that reports
+  // no Claude installation and carries a status half is one this app never
+  // wrote.
+  if (snapshot->claude.status == AUBProviderStatusNotInstalled)
+    return false;
   if (snapshot->statusIndicator > AUBStatusIndicatorCritical ||
       snapshot->statusComponentCount > AUBMaxStatusComponents ||
       !isfinite(snapshot->statusFetchedAt) || snapshot->statusFetchedAt <= 0 ||

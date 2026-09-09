@@ -83,9 +83,16 @@ menu-bar segment, no panel row, no sign-in hint, and for Claude no service-statu
 and no service-tracking settings. The fetcher decides that from the state each CLI writes
 on its first run, `~/.claude.json` or `~/.claude` for Claude Code and `~/.codex` for Codex,
 rather than from the binary, because an app launched at login inherits no shell `PATH` and
-would read a machine that runs an agent daily as having none. An installed CLI that is
-merely signed out keeps its `claude login` or `codex login` hint, which is the distinction
-the `not_installed` provider state carries through the protocol.
+would read a machine that runs an agent daily as having none. When no provider is signed
+in, the panel offers a `claude login` or `codex login` hint for each CLI that is installed
+and omits the one that is not, which is the distinction the `not_installed` provider state
+carries through the protocol.
+
+That same missing environment bounds detection: launched at login the app sees neither
+`CLAUDE_CONFIG_DIR` nor `CODEX_HOME`, so it reads the default locations. A machine that
+keeps its agent state somewhere else and holds no Keychain credential reads as having no
+CLI, which is the state the app can least usefully act on, since the usage fetch would
+not find that state either.
 
 The fetcher reads the Claude item by running `/usr/bin/security find-generic-password`,
 which never raises a consent prompt. Claude Code writes that item with
