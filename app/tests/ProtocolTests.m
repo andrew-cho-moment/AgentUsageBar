@@ -86,22 +86,45 @@ int main(int argc, char **argv) {
             "W\tclaude\tsession\tSession\t1\t\t1\n"
             "P\tcodex\tsigned_out\t\nD\t1\n",
             AUBFetcherModeUsage, false);
+  AUBExpect("folder record",
+            "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t/x\tsetting\n"
+            "P\tcodex\tnot_installed\t\nH\tcodex\t/y\tstandard\n"
+            "D\t1\n",
+            AUBFetcherModeUsage, true);
+  AUBExpect("folder record with an unknown source",
+            "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t/x\tguessed\n"
+            "P\tcodex\tsigned_out\t\nD\t1\n",
+            AUBFetcherModeUsage, false);
+  // A folder record before its provider would attach to a state nothing has
+  // set.
+  AUBExpect("folder record before its provider",
+            "V\t1\nH\tclaude\t/x\tsetting\nP\tclaude\tready\tPro\n"
+            "P\tcodex\tsigned_out\t\nD\t1\n",
+            AUBFetcherModeUsage, false);
+  AUBExpect("duplicate folder record",
+            "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t/x\tsetting\n"
+            "H\tclaude\t/z\tsetting\nP\tcodex\tsigned_out\t\nD\t1\n",
+            AUBFetcherModeUsage, false);
+  AUBExpect("folder record with no path",
+            "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t\tsetting\n"
+            "P\tcodex\tsigned_out\t\nD\t1\n",
+            AUBFetcherModeUsage, false);
   AUBExpect("all rejects a lone provider",
             "V\t1\nP\tclaude\tsigned_out\t\n"
             "S\tnone\tOperational\tTracks Claude\t1\nD\t1\n",
             AUBFetcherModeAll, false);
 
-  // A provider reports one U record per API field it did not recognize, so the count
-  // is set by the response rather than by this app. Overflowing the fixed buffer has
-  // to cost the overflowing text, never the refresh that carried it.
+  // A provider reports one U record per API field it did not recognize, so the
+  // count is set by the response rather than by this app. Overflowing the fixed
+  // buffer has to cost the overflowing text, never the refresh that carried it.
   {
     char fixture[4096];
     size_t offset = (size_t)snprintf(fixture, sizeof(fixture),
                                      "V\t1\nP\tclaude\tready\tPro\n");
     for (int index = 0; index < 24; index++) {
-      offset += (size_t)snprintf(fixture + offset, sizeof(fixture) - offset,
-                                 "U\tclaude\tunrecognized field number %d\n",
-                                 index);
+      offset +=
+          (size_t)snprintf(fixture + offset, sizeof(fixture) - offset,
+                           "U\tclaude\tunrecognized field number %d\n", index);
     }
     snprintf(fixture + offset, sizeof(fixture) - offset,
              "P\tcodex\tsigned_out\t\nD\t1\n");

@@ -32,6 +32,7 @@ that earlier builds left behind, and `./setup.sh --clean` runs that sweep alone.
 - User-supplied monthly limits when a provider reports spend without a limit
 - Per-service Claude status tracking
 - Only the providers installed on the machine, with the rest silent
+- A configurable folder per provider, defaulting to what each CLI installs to
 - System, Dark, and Light appearance modes
 - Global Command-U panel shortcut
 - Start at login by default, with a saved opt-out
@@ -48,11 +49,16 @@ The app stores no credentials. It reads the ones the provider CLIs already own:
 
 A provider whose CLI this machine has never had gets no mention anywhere: no menu-bar
 segment, no panel row, no sign-in hint, and for Claude no service-status section. The
-fetcher decides that from the state each CLI writes on its first run, `~/.claude.json` or
-`~/.claude` and `~/.codex`, rather than from the binary, because a login launch inherits
-no shell `PATH`. It reads `CODEX_HOME` when the environment sets it and never reads
-`CLAUDE_CONFIG_DIR`, so a machine that keeps its agent state outside the default
-locations and holds no Keychain credential reads as having no CLI.
+fetcher decides that from the folder each CLI writes on its first run, rather than from
+the binary, because a login launch inherits no shell `PATH`.
+
+Settings names that folder per provider, for a machine that keeps its agent state
+somewhere else. Each provider takes the folder from Settings, then `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME` when a shell launched the app, then `~/.claude` or `~/.codex`. The setting
+leads because a login launch sees neither variable. Every fetch reports the folder it read
+and which of the three named it, so the Settings row shows the folder in use and offers
+Clear only for the one it set. A chosen folder that is missing reports itself as a
+provider error, where a missing default folder means the CLI was never installed.
 
 The fetcher reads the Claude item by running `/usr/bin/security find-generic-password`.
 Claude Code rewrites that item's ACL on every token refresh to trust only that one binary,

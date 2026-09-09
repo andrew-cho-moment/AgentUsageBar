@@ -38,7 +38,7 @@ struct StatusFetchComponent: Sendable {
 
 enum StatusFetcher {
     private static let endpoint = URL(string: "https://status.claude.com/api/v2/summary.json")!
-    private static let defaults = UserDefaults(suiteName: "com.andrewcho.agentusagebar")!
+    private static let defaults = Settings.store
 
     private struct SummaryResponse: Decodable, Sendable {
         struct Summary: Decodable, Sendable { let description: String }

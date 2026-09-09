@@ -105,6 +105,10 @@ enum UsageError: LocalizedError {
     /// should hear nothing about Codex, while one that is merely signed out
     /// gets told which command signs it back in.
     case notInstalled(Provider)
+    /// The folder the user named in Settings is gone. Reported rather than
+    /// treated as an absent CLI, because a setting the user made and can clear
+    /// is worth a visible error where silence would look like a broken app.
+    case homeMissing(Provider, path: String)
     case unauthorized
     case http(status: Int)
     case malformed(field: String)
@@ -116,6 +120,9 @@ enum UsageError: LocalizedError {
             return "Not signed in to \(p.displayName)"
         case .notInstalled(let p):
             return "\(p.displayName) is not installed"
+        case .homeMissing(let p, let path):
+            let display = (path as NSString).abbreviatingWithTildeInPath
+            return "\(p.displayName) folder is missing: \(Bounded.utf8(display, bytes: 100))"
         case .unauthorized:
             return "Sign-in expired"
         case .http(let status):
@@ -132,6 +139,10 @@ enum UsageError: LocalizedError {
 
 protocol UsageProvider: Sendable {
     var provider: Provider { get }
+
+    /// Reported for every provider, signed in or not, because the folder the app read
+    /// is what a user checks when a provider says it has nothing.
+    var home: AgentHome { get }
 
     func fetch() async throws -> ProviderSnapshot
 }

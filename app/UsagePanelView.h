@@ -34,6 +34,19 @@ typedef NS_ENUM(uint8_t, AUBProviderKind) {
                forProvider:(AUBProviderKind)provider;
 - (void)usagePanelView:(AUBUsagePanelView *)view
     clearBudgetOverrideForProvider:(AUBProviderKind)provider;
+/// The path stored in the setting, or nil when nothing is stored. Only the
+/// editor's initial text: what a provider actually read travels in the
+/// snapshot.
+- (NSString *)usagePanelView:(AUBUsagePanelView *)view
+     homeOverrideForProvider:(AUBProviderKind)provider;
+/// NO when the path names nothing this app can read, which leaves the field in
+/// editing so the user can correct it rather than storing a setting that fails
+/// on the next refresh.
+- (BOOL)usagePanelView:(AUBUsagePanelView *)view
+       setHomeOverride:(NSString *)path
+           forProvider:(AUBProviderKind)provider;
+- (void)usagePanelView:(AUBUsagePanelView *)view
+    clearHomeOverrideForProvider:(AUBProviderKind)provider;
 @end
 
 @interface AUBUsagePanelView : NSView

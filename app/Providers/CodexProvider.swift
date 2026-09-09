@@ -6,6 +6,7 @@ import Foundation
 /// CLI, so this app can never corrupt the CLI's sign-in.
 final class CodexProvider: UsageProvider, Sendable {
     let provider: Provider = .codex
+    var home: AgentHome { Self.sharedHome }
 
     private static let usageURL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
     private static let tokenURL = URL(string: "https://auth.openai.com/oauth/token")!
@@ -14,20 +15,13 @@ final class CodexProvider: UsageProvider, Sendable {
 
     // MARK: Credentials
 
-    private static let home =
-        ProcessInfo.processInfo.environment["CODEX_HOME"]
-        ?? (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
+    /// The Codex CLI keeps its config, history and sessions here, so this folder's
+    /// presence is what tells the app Codex exists.
+    static let sharedHome = AgentHome(
+        provider: .codex, environmentKey: "CODEX_HOME", standardFolder: ".codex")
 
     private static var authPath: String {
-        (home as NSString).appendingPathComponent("auth.json")
-    }
-
-    /// The Codex CLI creates this directory on its first run and keeps its config,
-    /// history and sessions there, so its absence is what tells the app Codex was never
-    /// installed here. Probing for the `codex` binary would not work: a menu-bar app
-    /// launched at login inherits no shell `PATH`.
-    private static var isInstalled: Bool {
-        FileManager.default.fileExists(atPath: home)
+        (sharedHome.path as NSString).appendingPathComponent("auth.json")
     }
 
     private struct StoredCredentials: Decodable {
@@ -176,7 +170,7 @@ final class CodexProvider: UsageProvider, Sendable {
             let credentials = try? JSONDecoder().decode(StoredCredentials.self, from: data),
             !credentials.accessToken.isEmpty
         else {
-            throw isInstalled ? UsageError.notLoggedIn(.codex) : .notInstalled(.codex)
+            throw sharedHome.missingCredential
         }
         return credentials
     }

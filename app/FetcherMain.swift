@@ -34,6 +34,7 @@ struct FetcherMain {
 
     private struct FetchResult: Sendable {
         let provider: Provider
+        let home: AgentHome
         let result: Result<ProviderSnapshot, Error>
     }
 
@@ -54,6 +55,7 @@ struct FetcherMain {
             case .success(let snapshot): emit(snapshot)
             case .failure(let error): emit(result.provider, error: error)
             }
+            emit(result.home)
         }
         if let status = await status { emit(status) }
         emit("D", epoch(Date()))
@@ -71,10 +73,12 @@ struct FetcherMain {
                 group.addTask {
                     do {
                         return FetchResult(
-                            provider: provider.provider,
+                            provider: provider.provider, home: provider.home,
                             result: .success(try await provider.fetch()))
                     } catch {
-                        return FetchResult(provider: provider.provider, result: .failure(error))
+                        return FetchResult(
+                            provider: provider.provider, home: provider.home,
+                            result: .failure(error))
                     }
                 }
             }
@@ -103,6 +107,16 @@ struct FetcherMain {
                 component.tracked ? "1" : "0"
             )
         }
+    }
+
+    /// Emitted for every provider after its state, signed in or not: the folder the app
+    /// read is what a user checks when a provider reports nothing, and the panel draws
+    /// it from the snapshot rather than re-deriving it from the setting. After, because
+    /// the host rejects a folder record for a provider it has no state for yet.
+    private static func emit(_ home: AgentHome) {
+        emit(
+            "H", home.provider.rawValue, field(Bounded.utf8(home.path, bytes: 480)),
+            home.source.rawValue)
     }
 
     private static func emit(_ snapshot: ProviderSnapshot) {

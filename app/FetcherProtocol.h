@@ -11,6 +11,7 @@ enum {
   AUBWindowIDCapacity = 64,
   AUBWindowLabelCapacity = 128,
   AUBErrorCapacity = 160,
+  AUBHomeCapacity = 512,
   AUBUnrecognizedCapacity = 256,
   AUBMaxStatusComponents = 16,
 };
@@ -31,6 +32,15 @@ typedef enum : uint8_t {
   /// raw, and inserting one would change what an existing cache means.
   AUBProviderStatusNotInstalled,
 } AUBProviderStatus;
+
+/// Who chose the folder a provider's CLI keeps its state in. The panel offers
+/// to clear only a folder the setting named, since the other two are not its to
+/// clear.
+typedef enum : uint8_t {
+  AUBHomeSourceStandard,
+  AUBHomeSourceEnvironment,
+  AUBHomeSourceSetting,
+} AUBHomeSource;
 
 typedef enum : uint8_t {
   AUBBudgetUnitNone,
@@ -97,6 +107,9 @@ typedef struct {
 
 typedef struct {
   AUBProviderStatus status;
+  /// The folder this provider's CLI was read from. Empty until the first fetch.
+  char home[AUBHomeCapacity];
+  AUBHomeSource homeSource;
   char plan[AUBProviderNameCapacity];
   char error[AUBErrorCapacity];
   AUBWindow windows[AUBMaxWindows];
