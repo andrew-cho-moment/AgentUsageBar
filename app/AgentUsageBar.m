@@ -574,7 +574,7 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
 }
 
 - (void)togglePanel {
-  if (_panel.visible) {
+  if (_panel != nil) {
     [self closePanel];
     return;
   }
