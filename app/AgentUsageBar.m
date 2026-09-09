@@ -867,6 +867,15 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
   [self updatePanelSize];
 }
 
+/// Only the editor's initial text: what a provider actually read travels in the
+/// snapshot, so a row showing a folder nobody set seeds no path into the field.
+- (NSString *)usagePanelView:(AUBUsagePanelView *)view
+     homeOverrideForProvider:(AUBProviderKind)providerKind {
+  (void)view;
+  return [NSUserDefaults.standardUserDefaults
+      stringForKey:AUBHomeOverrideKey(providerKind)];
+}
+
 /// A stored path that names no folder would report itself on every refresh as a
 /// provider error, so the setting is refused here instead. What the app keeps
 /// is the expanded path, which leaves no doubt about which folder it reads, and

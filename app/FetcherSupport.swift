@@ -96,7 +96,7 @@ enum Bounded {
     static func utf8(_ text: String, bytes limit: Int) -> String {
         if text.utf8.count <= limit { return text }
         var trimmed = ""
-        var used = 1  // the ellipsis that marks the cut
+        var used = 3  // the three bytes of the ellipsis that marks the cut
         for character in text.reversed() {
             let size = String(character).utf8.count
             if used + size > limit { break }

@@ -130,10 +130,25 @@ static NSString *AUBProviderHint(AUBProviderKind kind,
              : @"Run `codex login` to track Codex usage.";
 }
 
+/// Whether a key event's characters are text a field can hold. AppKit reports
+/// arrows, function keys and Home as private-use characters, which no control
+/// character set covers, so a Left arrow would otherwise append three invisible
+/// bytes to a path and leave the user with a folder that does not exist.
+static bool AUBIsTypedText(NSString *characters) {
+  for (NSUInteger index = 0; index < characters.length; index++) {
+    unichar character = [characters characterAtIndex:index];
+    if (character < 0x20 || character == 0x7F ||
+        (character >= 0xF700 && character <= 0xF8FF)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Keeps the end of the text, which for a path is the part that says which
-/// folder this is. `drawInRect:` places the baseline from the rect's top rather
-/// than from a point, so the rect starts one line height above where
-/// `AUBDrawText` would put the same string.
+/// folder this is. Truncation rides the paragraph style through the same
+/// typesetting pass the draw already runs, which is why this measures one line
+/// height and nothing else.
 static void AUBDrawTail(NSString *text, CGFloat x, CGFloat y, CGFloat width,
                         NSDictionary<NSAttributedStringKey, id> *attributes) {
   NSMutableParagraphStyle *style =
@@ -919,9 +934,10 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                value);
     }
   } else if (field == AUBEditorHome) {
-    const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
-    [self setEditorText:AUBString(provider->home)
-                            .stringByAbbreviatingWithTildeInPath];
+    NSString *stored = [_delegate usagePanelView:self
+                         homeOverrideForProvider:kind];
+    if (stored.length > 0)
+      [self setEditorText:stored.stringByAbbreviatingWithTildeInPath];
   }
   [self.window makeFirstResponder:self];
   [self setNeedsDisplay:YES];
@@ -1067,6 +1083,13 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     return;
   }
 
+  // Command and Control carry shortcuts rather than text. Paste is the one this
+  // view answers itself, in -performKeyEquivalent:.
+  if (event.modifierFlags &
+      (NSEventModifierFlagCommand | NSEventModifierFlagControl)) {
+    [super keyDown:event];
+    return;
+  }
   NSString *characters = event.charactersIgnoringModifiers;
   if (characters.length == 0)
     return;
@@ -1078,9 +1101,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       NSBeep();
       return;
     }
-  } else if ([characters
-                 rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet]
-                 .location != NSNotFound) {
+  } else if (!AUBIsTypedText(characters)) {
     NSBeep();
     return;
   }
@@ -1088,7 +1109,6 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                           stringByAppendingString:characters]];
 }
 
-/// One UTF-8 character at a time, because the buffer is bytes and a path can
 /// One composed character at a time, so a backspace over an emoji does not
 /// leave half of its surrogate pair behind.
 - (void)deleteLastCharacter {
@@ -1112,6 +1132,24 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   }
   memcpy(_editorInput, bytes, length + 1);
   [self setNeedsDisplay:YES];
+}
+
+/// A path is long enough that pasting one is the normal way to set it, and this
+/// app has no menu to carry the standard Paste key equivalent.
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+  bool paste = (event.modifierFlags & NSEventModifierFlagCommand) != 0 &&
+               [event.charactersIgnoringModifiers isEqualToString:@"v"];
+  if (_editorField == AUBEditorNone || !paste)
+    return [super performKeyEquivalent:event];
+
+  NSString *pasted =
+      [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
+  if (pasted.length == 0 || !AUBIsTypedText(pasted)) {
+    NSBeep();
+    return YES;
+  }
+  [self setEditorText:[AUBString(_editorInput) stringByAppendingString:pasted]];
+  return YES;
 }
 
 - (void)scrollWheel:(NSEvent *)event {

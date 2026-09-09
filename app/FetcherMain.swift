@@ -109,9 +109,10 @@ struct FetcherMain {
         }
     }
 
-    /// Emitted for every provider before its state, signed in or not: the folder the
-    /// app read is what a user checks when a provider reports nothing, and the panel
-    /// draws it from the snapshot rather than re-deriving it from the setting.
+    /// Emitted for every provider after its state, signed in or not: the folder the app
+    /// read is what a user checks when a provider reports nothing, and the panel draws
+    /// it from the snapshot rather than re-deriving it from the setting. After, because
+    /// the host rejects a folder record for a provider it has no state for yet.
     private static func emit(_ home: AgentHome) {
         emit(
             "H", home.provider.rawValue, field(Bounded.utf8(home.path, bytes: 480)),
