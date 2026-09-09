@@ -65,15 +65,16 @@ static bool AUBAppend(char *destination, size_t capacity, const char *source) {
   return true;
 }
 
-/// Overwrites the tail of a full buffer with an ellipsis, so a truncated diagnostics
-/// list is visibly truncated. `capacity` counts the NUL.
+/// Overwrites the tail of a full buffer with an ellipsis, so a truncated
+/// diagnostics list is visibly truncated. `capacity` counts the NUL.
 static void AUBMarkTruncated(char *destination, size_t capacity) {
   static const char marker[] = ", ...";
   const size_t markerLength = sizeof(marker) - 1;
   if (capacity <= markerLength)
     return;
   size_t used = strlen(destination);
-  size_t start = used + markerLength < capacity ? used : capacity - 1 - markerLength;
+  size_t start =
+      used + markerLength < capacity ? used : capacity - 1 - markerLength;
   memcpy(destination + start, marker, markerLength + 1);
 }
 
@@ -244,6 +245,30 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
       continue;
     }
 
+    if (strcmp(fields[0], "H") == 0) {
+      if (count != 4)
+        return false;
+      AUBProviderState *provider = AUBProvider(&parsed, fields[1]);
+      if (provider == NULL || provider->status == AUBProviderStatusPending ||
+          provider->home[0] != '\0') {
+        return false;
+      }
+      if (strcmp(fields[3], "standard") == 0) {
+        provider->homeSource = AUBHomeSourceStandard;
+      } else if (strcmp(fields[3], "environment") == 0) {
+        provider->homeSource = AUBHomeSourceEnvironment;
+      } else if (strcmp(fields[3], "setting") == 0) {
+        provider->homeSource = AUBHomeSourceSetting;
+      } else {
+        return false;
+      }
+      if (fields[2][0] == '\0' ||
+          !AUBCopy(provider->home, sizeof(provider->home), fields[2])) {
+        return false;
+      }
+      continue;
+    }
+
     if (strcmp(fields[0], "W") == 0) {
       if (count != 7)
         return false;
@@ -314,9 +339,9 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
       AUBProviderState *provider = AUBProvider(&parsed, fields[1]);
       if (provider == NULL || provider->status != AUBProviderStatusReady)
         return false;
-      // These strings are diagnostics about the response, so a full buffer must not
-      // discard an otherwise valid refresh. Mark the truncation instead, or the panel
-      // would read as a complete list of what the API changed.
+      // These strings are diagnostics about the response, so a full buffer must
+      // not discard an otherwise valid refresh. Mark the truncation instead, or
+      // the panel would read as a complete list of what the API changed.
       if (!AUBAppend(provider->unrecognized, sizeof(provider->unrecognized),
                      fields[2])) {
         AUBMarkTruncated(provider->unrecognized,

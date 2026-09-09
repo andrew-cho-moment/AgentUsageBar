@@ -33,8 +33,9 @@ typedef struct {
 } AUBActionRect;
 
 /// Headroom over the worst case (refresh, settings, 3 toggles, 2 manage links,
-/// 6 budget controls, 3 appearance segments, one row per status component) so
-/// that adding a control cannot silently push the last row past the limit.
+/// 6 budget controls, 6 folder controls, 3 appearance segments, one row per
+/// status component) so adding a control cannot silently push the last row past
+/// the limit.
 enum { AUBMaxActions = AUBMaxStatusComponents + 32 };
 
 static const CGFloat AUBWidth = 360;
@@ -129,20 +130,19 @@ static NSString *AUBProviderHint(AUBProviderKind kind,
              : @"Run `codex login` to track Codex usage.";
 }
 
-/// The tail of a path, which is the end that says which folder this is, fitted
-/// to `width` with a leading ellipsis when the whole path does not fit.
-static NSString *
-AUBFitTail(NSString *text, CGFloat width,
-           NSDictionary<NSAttributedStringKey, id> *attributes) {
-  if ([text sizeWithAttributes:attributes].width <= width)
-    return text;
-  for (NSUInteger drop = 1; drop < text.length; drop++) {
-    NSString *candidate =
-        [@"…" stringByAppendingString:[text substringFromIndex:drop]];
-    if ([candidate sizeWithAttributes:attributes].width <= width)
-      return candidate;
-  }
-  return @"…";
+/// Keeps the end of the text, which for a path is the part that says which
+/// folder this is. `drawInRect:` places the baseline from the rect's top rather
+/// than from a point, so the rect starts one line height above where
+/// `AUBDrawText` would put the same string.
+static void AUBDrawTail(NSString *text, CGFloat x, CGFloat y, CGFloat width,
+                        NSDictionary<NSAttributedStringKey, id> *attributes) {
+  NSMutableParagraphStyle *style =
+      [NSParagraphStyle.defaultParagraphStyle mutableCopy];
+  style.lineBreakMode = NSLineBreakByTruncatingHead;
+  NSMutableDictionary *truncating = [attributes mutableCopy];
+  truncating[NSParagraphStyleAttributeName] = style;
+  CGFloat height = ceil([text sizeWithAttributes:attributes].height);
+  [text drawInRect:NSMakeRect(x, y, width, height) withAttributes:truncating];
 }
 
 static NSString *AUBManageURL(AUBProviderKind kind) {
@@ -530,55 +530,92 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
 /// environment, so a machine that moved its agent state can be read only from a
 /// setting the app holds itself.
 - (CGFloat)homeSettingsAtY:(CGFloat)y draw:(bool)draw {
+  y = [self sectionHeaderAtY:y title:@"Agent folders" draw:draw];
+  y += 18;
+  if (draw) {
+    AUBDrawText(@"Empty reads the folder each CLI installs to.", AUBMargin + 10,
+                y, _caption2);
+  }
+  y += 24;
+
+  for (AUBProviderKind kind = AUBProviderKindClaude;
+       kind <= AUBProviderKindCodex; kind++) {
+    const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
+    // The folder the last fetch actually read, so a row cannot disagree with
+    // the provider beside it. Only the one the setting named is this panel's to
+    // clear.
+    NSString *value =
+        AUBString(provider->home).stringByAbbreviatingWithTildeInPath;
+    y = [self editorRowAtY:y
+                     field:AUBEditorHome
+                      kind:kind
+                fieldWidth:156
+                     value:value
+               placeholder:@"reading…"
+                 clearable:provider->homeSource == AUBHomeSourceSetting
+                      draw:draw];
+    y += 26;
+  }
+  return y;
+}
+
+/// One labelled field with Set, and Clear when there is a stored value to
+/// remove. The three actions follow from the field, so a row states only what
+/// it draws.
+- (CGFloat)editorRowAtY:(CGFloat)y
+                  field:(AUBEditorField)field
+                   kind:(AUBProviderKind)kind
+             fieldWidth:(CGFloat)fieldWidth
+                  value:(NSString *)value
+            placeholder:(NSString *)placeholder
+              clearable:(bool)clearable
+                   draw:(bool)draw {
+  NSRect box = NSMakeRect(AUBMargin + 70, y - 3, fieldWidth, 22);
+  if (!draw)
+    return y;
+
+  bool editing = [self isEditing:field for:kind];
+  AUBDrawText(AUBProviderName(kind), AUBMargin + 10, y, _caption2);
+  [(editing ? NSColor.controlAccentColor
+            : NSColor.tertiaryLabelColor) setStroke];
+  [[NSBezierPath bezierPathWithRoundedRect:box xRadius:4 yRadius:4] stroke];
+
+  NSString *text = editing ? AUBString(_editorInput) : value;
+  NSDictionary *attributes = text.length == 0 ? _caption2 : _caption;
+  AUBDrawTail(text.length == 0 ? placeholder : text, NSMinX(box) + 6, y,
+              NSWidth(box) - 12, attributes);
+  [self addAction:(field == AUBEditorBudget ? AUBActionEditBudget
+                                            : AUBActionEditHome)
+         argument:kind
+             rect:box];
+
+  NSRect set = NSMakeRect(NSMaxX(box) + 8, y - 3, 34, 22);
+  AUBDrawText(@"Set", NSMinX(set) + 6, y, _caption);
+  [self addAction:(field == AUBEditorBudget ? AUBActionSetBudget
+                                            : AUBActionSetHome)
+         argument:kind
+             rect:set];
+  if (clearable) {
+    NSRect clear = NSMakeRect(NSMaxX(set) + 6, y - 3, 44, 22);
+    AUBDrawText(@"Clear", NSMinX(clear) + 4, y, _caption);
+    [self addAction:(field == AUBEditorBudget ? AUBActionClearBudget
+                                              : AUBActionClearHome)
+           argument:kind
+               rect:clear];
+  }
+  return y;
+}
+
+/// The separator and title every settings section opens with. The advance after
+/// the title stays with the caller, which is the one thing they disagree on.
+- (CGFloat)sectionHeaderAtY:(CGFloat)y title:(NSString *)title draw:(bool)draw {
   if (draw) {
     [NSColor.separatorColor setFill];
     NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
   }
   y += 14;
   if (draw)
-    AUBDrawText(@"Agent folders", AUBMargin + 10, y, _caption);
-  y += 18;
-  if (draw) {
-    AUBDrawText(@"Empty reads `~/.claude` and `~/.codex`.", AUBMargin + 10, y,
-                _caption2);
-  }
-  y += 24;
-
-  for (AUBProviderKind kind = AUBProviderKindClaude;
-       kind <= AUBProviderKindCodex; kind++) {
-    NSRect field = NSMakeRect(AUBMargin + 70, y - 3, 156, 22);
-    if (draw) {
-      bool editing = [self isEditing:AUBEditorHome for:kind];
-      NSString *configured = [_delegate usagePanelView:self
-                               homeOverrideForProvider:kind];
-      AUBDrawText(AUBProviderName(kind), AUBMargin + 10, y, _caption2);
-      [(editing ? NSColor.controlAccentColor
-                : NSColor.tertiaryLabelColor) setStroke];
-      [[NSBezierPath bezierPathWithRoundedRect:field xRadius:4
-                                       yRadius:4] stroke];
-      NSString *input = @"";
-      if (editing) {
-        input = AUBString(_editorInput);
-      } else if (configured.length > 0) {
-        input = configured.stringByAbbreviatingWithTildeInPath;
-      }
-      NSDictionary *inputAttributes = input.length == 0 ? _caption2 : _caption;
-      AUBDrawText(AUBFitTail(input.length == 0 ? @"default" : input,
-                             NSWidth(field) - 12, inputAttributes),
-                  NSMinX(field) + 6, y, inputAttributes);
-      [self addAction:AUBActionEditHome argument:kind rect:field];
-
-      NSRect set = NSMakeRect(NSMaxX(field) + 8, y - 3, 34, 22);
-      AUBDrawText(@"Set", NSMinX(set) + 6, y, _caption);
-      [self addAction:AUBActionSetHome argument:kind rect:set];
-      if (configured.length > 0) {
-        NSRect clear = NSMakeRect(NSMaxX(set) + 6, y - 3, 44, 22);
-        AUBDrawText(@"Clear", NSMinX(clear) + 4, y, _caption);
-        [self addAction:AUBActionClearHome argument:kind rect:clear];
-      }
-    }
-    y += 26;
-  }
+    AUBDrawText(title, AUBMargin + 10, y, _caption);
   return y;
 }
 
@@ -589,15 +626,9 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   if (!_snapshot->hasStatus)
     return y;
 
-  if (draw) {
-    [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-  }
-  y += 14;
-  if (draw) {
-    AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
-                _caption);
-  }
+  y = [self sectionHeaderAtY:y
+                       title:@"Claude status: services to track"
+                        draw:draw];
   y += 18;
   if (draw) {
     AUBDrawText(@"At least one service must remain selected.", AUBMargin + 10,
@@ -653,13 +684,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     y += 18;
   }
 
-  if (draw) {
-    [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-  }
-  y += 14;
-  if (draw)
-    AUBDrawText(@"Monthly budget", AUBMargin + 10, y, _caption);
+  y = [self sectionHeaderAtY:y title:@"Monthly budget" draw:draw];
   y += 20;
   if (budgetCandidateCount == 0) {
     if (draw) {
@@ -673,38 +698,21 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
       if (!AUBCanOverrideBudget(provider))
         continue;
-      NSRect field = NSMakeRect(AUBMargin + 70, y - 3, 96, 22);
-      if (draw) {
-        bool editing = [self isEditing:AUBEditorBudget for:kind];
-        AUBDrawText(AUBProviderName(kind), AUBMargin + 10, y, _caption2);
-        [(editing ? NSColor.controlAccentColor
-                  : NSColor.tertiaryLabelColor) setStroke];
-        [[NSBezierPath bezierPathWithRoundedRect:field xRadius:4
-                                         yRadius:4] stroke];
-        NSString *input = @"";
-        if (editing) {
-          input = AUBString(_editorInput);
-        } else if (provider->budget.overridden) {
-          double value = (double)provider->budget.limitMinor /
-                         (double)AUBScale(provider->budget.exponent);
-          input = [NSString
-              stringWithFormat:@"%.*f", provider->budget.exponent, value];
-        }
-        NSDictionary *inputAttributes =
-            input.length == 0 ? _caption2 : _caption;
-        AUBDrawText(input.length == 0 ? @"e.g. 1000" : input, NSMinX(field) + 6,
-                    y, inputAttributes);
-        [self addAction:AUBActionEditBudget argument:kind rect:field];
-
-        NSRect set = NSMakeRect(NSMaxX(field) + 8, y - 3, 34, 22);
-        AUBDrawText(@"Set", NSMinX(set) + 6, y, _caption);
-        [self addAction:AUBActionSetBudget argument:kind rect:set];
-        if (provider->budget.overridden) {
-          NSRect clear = NSMakeRect(NSMaxX(set) + 6, y - 3, 44, 22);
-          AUBDrawText(@"Clear", NSMinX(clear) + 4, y, _caption);
-          [self addAction:AUBActionClearBudget argument:kind rect:clear];
-        }
+      NSString *stored = @"";
+      if (provider->budget.overridden) {
+        double value = (double)provider->budget.limitMinor /
+                       (double)AUBScale(provider->budget.exponent);
+        stored = [NSString
+            stringWithFormat:@"%.*f", provider->budget.exponent, value];
       }
+      y = [self editorRowAtY:y
+                       field:AUBEditorBudget
+                        kind:kind
+                  fieldWidth:96
+                       value:stored
+                 placeholder:@"e.g. 1000"
+                   clearable:provider->budget.overridden
+                        draw:draw];
       y += 34;
     }
   }
@@ -712,13 +720,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y = [self homeSettingsAtY:y draw:draw];
   y = [self statusSettingsAtY:y draw:draw];
 
-  if (draw) {
-    [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-  }
-  y += 14;
-  if (draw)
-    AUBDrawText(@"Appearance", AUBMargin + 10, y, _caption);
+  y = [self sectionHeaderAtY:y title:@"Appearance" draw:draw];
   y += 22;
   const AUBAppearanceMode modes[] = {
       AUBAppearanceModeSystem,
@@ -917,10 +919,9 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                value);
     }
   } else if (field == AUBEditorHome) {
-    NSString *configured = [_delegate usagePanelView:self
-                             homeOverrideForProvider:kind];
-    if (configured.length > 0)
-      [self setEditorText:configured.stringByAbbreviatingWithTildeInPath];
+    const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
+    [self setEditorText:AUBString(provider->home)
+                            .stringByAbbreviatingWithTildeInPath];
   }
   [self.window makeFirstResponder:self];
   [self setNeedsDisplay:YES];
@@ -1071,10 +1072,9 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     return;
   if (_editorField == AUBEditorBudget) {
     unichar character = [characters characterAtIndex:0];
-    bool digit = characters.length == 1 && character >= '0' && character <= '9';
-    bool decimal = characters.length == 1 && character == '.' &&
-                   strchr(_editorInput, '.') == NULL;
-    if (!digit && !decimal) {
+    bool digit = character >= '0' && character <= '9';
+    bool decimal = character == '.' && strchr(_editorInput, '.') == NULL;
+    if (characters.length != 1 || (!digit && !decimal)) {
       NSBeep();
       return;
     }
@@ -1084,25 +1084,11 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     NSBeep();
     return;
   }
-  [self appendText:characters];
+  [self setEditorText:[AUBString(_editorInput)
+                          stringByAppendingString:characters]];
 }
 
 /// One UTF-8 character at a time, because the buffer is bytes and a path can
-/// hold any of them.
-- (void)appendText:(NSString *)text {
-  const char *bytes = text.UTF8String;
-  if (bytes == NULL)
-    return;
-  size_t length = strlen(_editorInput);
-  size_t added = strlen(bytes);
-  if (length + added + 1 > sizeof(_editorInput)) {
-    NSBeep();
-    return;
-  }
-  memcpy(_editorInput + length, bytes, added + 1);
-  [self setNeedsDisplay:YES];
-}
-
 /// One composed character at a time, so a backspace over an emoji does not
 /// leave half of its surrogate pair behind.
 - (void)deleteLastCharacter {
@@ -1120,8 +1106,10 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   if (bytes == NULL)
     return;
   size_t length = strlen(bytes);
-  if (length + 1 > sizeof(_editorInput))
+  if (length + 1 > sizeof(_editorInput)) {
+    NSBeep();
     return;
+  }
   memcpy(_editorInput, bytes, length + 1);
   [self setNeedsDisplay:YES];
 }

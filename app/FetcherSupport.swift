@@ -19,6 +19,8 @@ enum HTTPClient {
 enum Settings {
     static let store = UserDefaults(suiteName: "com.andrewcho.agentusagebar")!
 
+    /// Expanded here as well as by the host, because a path can also arrive from
+    /// `defaults write`, which normalizes nothing.
     static func homeOverride(_ provider: Provider) -> String? {
         guard let value = store.string(forKey: "home_override_\(provider.rawValue)"),
             !value.isEmpty
@@ -27,40 +29,81 @@ enum Settings {
     }
 }
 
-/// Where a provider's CLI keeps the state this app reads: the app's own setting first,
-/// then the variable the CLI itself honours, then the folder the CLI installs to. The
-/// setting comes first because an app launched at login inherits no shell environment,
-/// which makes it the only way to read a machine that keeps its agent state elsewhere.
+/// Where a provider's CLI keeps the state this app reads, and who chose that folder.
+/// An app launched at login inherits no shell environment, which is why the app holds
+/// a setting of its own: it is the only source that survives that launch.
 struct AgentHome: Sendable {
+    enum Source: String, Sendable {
+        /// The folder the CLI installs to.
+        case standard
+        /// The CLI's own variable, visible only when a shell launched this app.
+        case environment
+        /// The folder named in the app's settings.
+        case setting
+
+        /// Whether a person picked this folder, which is what makes its absence an
+        /// error to report rather than a CLI that was never installed.
+        var isChosen: Bool { self != .standard }
+    }
+
+    let provider: Provider
     let path: String
-    /// True when the user named this folder. That is what separates a setting to fix
-    /// from a CLI that was never installed, and the two report differently.
-    let isConfigured: Bool
+    let source: Source
 
-    init(configuredPath: String?, environmentPath: String?, defaultPath: String) {
-        path = configuredPath ?? environmentPath ?? defaultPath
-        isConfigured = configuredPath != nil
+    init(
+        provider: Provider, configuredPath: String?, environmentPath: String?, standardPath: String
+    ) {
+        self.provider = provider
+        if let configuredPath {
+            path = configuredPath
+            source = .setting
+        } else if let environmentPath {
+            path = environmentPath
+            source = .environment
+        } else {
+            path = standardPath
+            source = .standard
+        }
     }
 
-    init(provider: Provider, environmentKey: String, defaultFolder: String) {
+    init(provider: Provider, environmentKey: String, standardFolder: String) {
         self.init(
+            provider: provider,
             configuredPath: Settings.homeOverride(provider),
-            environmentPath: ProcessInfo.processInfo.environment[environmentKey],
-            defaultPath: (NSHomeDirectory() as NSString).appendingPathComponent(defaultFolder))
+            // `getenv` rather than `ProcessInfo.environment`, which copies the whole
+            // environment into a fresh dictionary on every access.
+            environmentPath: getenv(environmentKey).map { String(cString: $0) },
+            standardPath: (NSHomeDirectory() as NSString).appendingPathComponent(standardFolder))
     }
 
-    var exists: Bool {
+    /// What a missing credential means here. A folder that is present holds an install
+    /// nobody has signed into; a chosen folder that is gone is a setting or a variable
+    /// its owner can fix; a missing standard folder is a CLI that was never installed.
+    var missingCredential: UsageError {
         var directory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &directory)
+        let exists =
+            FileManager.default.fileExists(atPath: path, isDirectory: &directory)
             && directory.boolValue
-    }
-
-    /// What a missing credential means here: a folder that is present holds an install
-    /// nobody has signed into, a configured folder that is gone is a stale setting the
-    /// user can see and clear, and a missing default folder is a CLI never installed.
-    func missingCredential(_ provider: Provider) -> UsageError {
         if exists { return .notLoggedIn(provider) }
-        return isConfigured ? .homeMissing(provider, path: path) : .notInstalled(provider)
+        return source.isChosen ? .homeMissing(provider, path: path) : .notInstalled(provider)
+    }
+}
+
+/// Text bounded to a byte budget on a character boundary. The host copies these fields
+/// into fixed buffers and rejects the whole refresh on overflow, so a deep path has to
+/// be cut here, and cut by bytes: one accented component is two bytes per character.
+enum Bounded {
+    static func utf8(_ text: String, bytes limit: Int) -> String {
+        if text.utf8.count <= limit { return text }
+        var trimmed = ""
+        var used = 1  // the ellipsis that marks the cut
+        for character in text.reversed() {
+            let size = String(character).utf8.count
+            if used + size > limit { break }
+            used += size
+            trimmed = String(character) + trimmed
+        }
+        return "\u{2026}" + trimmed
     }
 }
 

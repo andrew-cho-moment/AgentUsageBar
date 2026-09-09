@@ -136,43 +136,72 @@ import Foundation
         print("\(checks) Claude decode tests passed")
     }
 
-    /// The three ways a provider can have no credential. Conflating any two of them
-    /// either hides a working CLI or nags a machine that never had one.
+    /// What a missing credential means, which turns on who chose the folder. Report
+    /// a chosen folder's absence and a machine that never had the CLI the same way,
+    /// and one user gets nagged about a CLI they do not want while another gets
+    /// silence about a folder they can fix.
     static func homeTests() {
         let present = FileManager.default.temporaryDirectory.path
         let absent = (present as NSString).appendingPathComponent("no-such-agent-folder")
 
         expectHome(
-            AgentHome(configuredPath: present, environmentPath: nil, defaultPath: absent),
-            path: present, error: "Not signed in to Claude")
+            AgentHome(
+                provider: .claude, configuredPath: absent, environmentPath: nil,
+                standardPath: present),
+            path: absent, source: .setting, error: "Claude folder is missing: \(absent)")
+        // A shell exported this one, so its owner can fix it too.
         expectHome(
-            AgentHome(configuredPath: absent, environmentPath: nil, defaultPath: present),
-            path: absent, error: "Claude folder is missing: \(absent)")
+            AgentHome(
+                provider: .claude, configuredPath: nil, environmentPath: absent,
+                standardPath: present),
+            path: absent, source: .environment,
+            error: "Claude folder is missing: \(absent)")
         expectHome(
-            AgentHome(configuredPath: nil, environmentPath: nil, defaultPath: absent),
-            path: absent, error: "Claude is not installed")
+            AgentHome(
+                provider: .claude, configuredPath: nil, environmentPath: nil,
+                standardPath: absent),
+            path: absent, source: .standard, error: "Claude is not installed")
         // The setting exists because the environment is invisible at login, so it wins.
         expectHome(
-            AgentHome(configuredPath: present, environmentPath: absent, defaultPath: absent),
-            path: present, error: "Not signed in to Claude")
+            AgentHome(
+                provider: .claude, configuredPath: present, environmentPath: absent,
+                standardPath: absent),
+            path: present, source: .setting, error: "Not signed in to Claude")
         expectHome(
-            AgentHome(configuredPath: nil, environmentPath: present, defaultPath: absent),
-            path: present, error: "Not signed in to Claude")
+            AgentHome(
+                provider: .claude, configuredPath: nil, environmentPath: present,
+                standardPath: absent),
+            path: present, source: .environment, error: "Not signed in to Claude")
+
+        // The host copies this into a fixed field and rejects the refresh on overflow.
+        checks += 1
+        let deep = String(repeating: "é", count: 400)
+        let message = UsageError.homeMissing(.codex, path: deep).localizedDescription
+        if message.utf8.count > 160 {
+            fail("a deep path produced \(message.utf8.count) bytes of error text")
+        }
     }
 
-    static func expectHome(_ home: AgentHome, path: String, error: String) {
+    static func expectHome(
+        _ home: AgentHome, path: String, source: AgentHome.Source, error: String
+    ) {
         checks += 1
         if home.path != path {
-            FileHandle.standardError.write(
-                Data("home resolved to \(home.path), expected \(path)\n".utf8))
-            failures += 1
+            fail("home resolved to \(home.path), expected \(path)")
         }
         checks += 1
-        let actual = home.missingCredential(.claude).localizedDescription
-        if actual != error {
-            FileHandle.standardError.write(
-                Data("home reported \"\(actual)\", expected \"\(error)\"\n".utf8))
-            failures += 1
+        if home.source != source {
+            fail("home source is \(home.source.rawValue), expected \(source.rawValue)")
         }
+        checks += 1
+        let actual = home.missingCredential.localizedDescription
+        if actual != error {
+            fail("home reported \"\(actual)\", expected \"\(error)\"")
+        }
+    }
+
+    static func fail(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+        failures += 1
     }
 }

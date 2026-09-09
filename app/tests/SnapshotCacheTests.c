@@ -36,6 +36,13 @@ int main(void) {
   snapshot.codex.status = AUBProviderStatusNotInstalled;
   AUBExpect("not-installed provider", &snapshot, true);
 
+  snapshot.claude.homeSource = (AUBHomeSource)(AUBHomeSourceSetting + 1);
+  AUBExpect("unknown folder source", &snapshot, false);
+  snapshot.claude.homeSource = AUBHomeSourceStandard;
+  memset(snapshot.claude.home, 'x', sizeof(snapshot.claude.home));
+  AUBExpect("unterminated folder path", &snapshot, false);
+  memset(snapshot.claude.home, 0, sizeof(snapshot.claude.home));
+
   snapshot.hasStatus = true;
   snapshot.statusFetchedAt = 1;
   snapshot.claude.status = AUBProviderStatusNotInstalled;
@@ -55,6 +62,6 @@ int main(void) {
 
   if (failures != 0)
     return 1;
-  printf("7 cache validation tests passed\n");
+  printf("9 cache validation tests passed\n");
   return 0;
 }

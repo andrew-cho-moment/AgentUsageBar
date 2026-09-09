@@ -6,6 +6,7 @@ import Foundation
 /// independently of the CLI.
 final class ClaudeProvider: UsageProvider, Sendable {
     let provider: Provider = .claude
+    var home: AgentHome { Self.sharedHome }
 
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     private static let betaHeader = "oauth-2025-04-20"
@@ -14,21 +15,20 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// `security` reports `errSecItemNotFound` as exit 44.
     private static let itemNotFoundStatus: Int32 = 44
 
-    /// Claude Code creates this folder on its first run and keeps its settings, commands
-    /// and transcripts there for the life of the install, so its presence is what tells
-    /// the app Claude Code exists here. Looking for the `claude` binary would not work:
-    /// a menu-bar app launched at login inherits no shell `PATH`.
-    private static let home = AgentHome(
-        provider: .claude, environmentKey: "CLAUDE_CONFIG_DIR", defaultFolder: ".claude")
+    /// Claude Code keeps its settings, commands and transcripts here for the life of the
+    /// install, so this folder's presence is what tells the app Claude Code exists.
+    static let sharedHome = AgentHome(
+        provider: .claude, environmentKey: "CLAUDE_CONFIG_DIR", standardFolder: ".claude")
 
-    /// Where the account and per-project history live. Tried inside the configured
-    /// folder first and then at its default path, because this app does not know which
-    /// of the two a `CLAUDE_CONFIG_DIR` install writes.
-    private static var configPaths: [String] {
-        [
-            (home.path as NSString).appendingPathComponent(".claude.json"),
+    /// The account and per-project history, inside the folder in use or else at its
+    /// standard path: this app cannot tell which of the two a `CLAUDE_CONFIG_DIR`
+    /// install writes, so it takes whichever exists.
+    private static var configPath: String? {
+        let manager = FileManager.default
+        return [
+            (sharedHome.path as NSString).appendingPathComponent(".claude.json"),
             (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json"),
-        ]
+        ].first { manager.fileExists(atPath: $0) }
     }
 
     private struct KeychainCredentials: Decodable {
@@ -215,7 +215,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
         }
         switch process.terminationStatus {
         case 0: break
-        case Self.itemNotFoundStatus: throw Self.home.missingCredential(.claude)
+        case Self.itemNotFoundStatus: throw Self.sharedHome.missingCredential
         default: throw UsageError.keychain
         }
         // `security -w` terminates the payload with a newline.
@@ -425,10 +425,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// plus re-decoding megabytes on every refresh to recover two strings that change
     /// roughly never is the most expensive thing this provider used to do.
     private static func readPlanLabel() -> String? {
-        let manager = FileManager.default
-        guard let path = configPaths.first(where: { manager.fileExists(atPath: $0) }) else {
-            return nil
-        }
+        guard let path = configPath else { return nil }
         let url = URL(fileURLWithPath: path)
 
         let attributes = try? url.resourceValues(forKeys: [

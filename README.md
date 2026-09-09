@@ -93,9 +93,12 @@ somewhere other than the default is one setting away from working. Each provider
 the folder from Settings first, then `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when a shell
 launched the app, then the location its CLI installs to. The setting comes first because
 an app launched at login inherits no shell environment and cannot see either variable.
-A folder named in Settings that is missing reports itself as a provider error rather than
-reading as an absent CLI: the user chose that folder and can clear the setting, and
-silence would look like a broken app.
+
+Every fetch reports the folder it read and which of those three named it, so the Settings
+row shows the folder in use rather than the setting's own value, and offers Clear only for
+a folder the setting named. A chosen folder that is missing reports itself as a provider
+error rather than reading as an absent CLI, whether a setting or a variable chose it:
+someone picked that folder and can fix it, where silence would look like a broken app.
 
 The fetcher reads the Claude item by running `/usr/bin/security find-generic-password`,
 which never raises a consent prompt. Claude Code writes that item with
@@ -157,7 +160,7 @@ cd app
 ./build.sh
 ```
 
-The build runs sixty-three deterministic protocol, cache and response-decoding tests,
+The build runs seventy-six deterministic protocol, cache and response-decoding tests,
 compiles size-optimized arm64 binaries with full link-time optimization, strips local
 symbols, signs every helper and the app, and verifies the nested signature. The result
 is `app/build/AgentUsageBar.app`.

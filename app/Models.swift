@@ -121,11 +121,8 @@ enum UsageError: LocalizedError {
         case .notInstalled(let p):
             return "\(p.displayName) is not installed"
         case .homeMissing(let p, let path):
-            // The host copies this into a 160-byte field and rejects the whole
-            // refresh on overflow, so a deep path reports its tail.
             let display = (path as NSString).abbreviatingWithTildeInPath
-            let tail = display.count > 80 ? "…" + String(display.suffix(80)) : display
-            return "\(p.displayName) folder is missing: \(tail)"
+            return "\(p.displayName) folder is missing: \(Bounded.utf8(display, bytes: 100))"
         case .unauthorized:
             return "Sign-in expired"
         case .http(let status):
@@ -142,6 +139,10 @@ enum UsageError: LocalizedError {
 
 protocol UsageProvider: Sendable {
     var provider: Provider { get }
+
+    /// Reported for every provider, signed in or not, because the folder the app read
+    /// is what a user checks when a provider says it has nothing.
+    var home: AgentHome { get }
 
     func fetch() async throws -> ProviderSnapshot
 }

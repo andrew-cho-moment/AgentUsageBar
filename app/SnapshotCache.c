@@ -52,6 +52,8 @@ static bool AUBProviderValid(const AUBProviderState *provider) {
   if (provider->status == AUBProviderStatusPending ||
       provider->status > AUBProviderStatusNotInstalled ||
       provider->windowCount > AUBMaxWindows ||
+      provider->homeSource > AUBHomeSourceSetting ||
+      !AUBTerminated(provider->home, sizeof(provider->home)) ||
       !AUBTerminated(provider->plan, sizeof(provider->plan)) ||
       !AUBTerminated(provider->error, sizeof(provider->error)) ||
       !AUBTerminated(provider->unrecognized, sizeof(provider->unrecognized)) ||
