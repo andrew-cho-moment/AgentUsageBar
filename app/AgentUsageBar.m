@@ -176,6 +176,7 @@ static double AUBNow(void) {
   double _usageAttemptedAt;
   double _statusAttemptedAt;
   double _pollUsageAt;
+  double _pollStatusAt;
   bool _usageRefreshing;
   bool _statusRefreshing;
   bool _statusRefreshPending;
@@ -321,8 +322,9 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 }
 
 /// status.claude.com describes Claude's services and nothing else, so a machine
-/// with no Claude Code never fetches that half, never renders it, and never
-/// lets its deadline pull the poll forward.
+/// with no Claude Code never fetches that half. What it renders follows from
+/// the snapshot: `merge:` drops the status half the moment Claude reports no
+/// installation, and the panel draws that section only when one is present.
 - (bool)tracksClaudeStatus {
   return AUBProviderInstalled(&_snapshot.claude);
 }
@@ -364,12 +366,12 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
                        provider->budget.present && provider->budget.hasReset,
                        provider->budget.resetsAt);
   }
-  double deadline = _pollUsageAt;
-  // A suppressed half never records an attempt, so a machine with no Claude
-  // Code has to leave the status deadline out of this rather than re-arm on a
-  // deadline that is permanently overdue.
-  if ([self tracksClaudeStatus])
-    deadline = MIN(deadline, _statusAttemptedAt + AUBPollInterval);
+  // A half nobody fetches records no attempt, so its due time is never, rather
+  // than an attempt time of zero that leaves the deadline permanently overdue
+  // and re-arms the timer on every pass.
+  _pollStatusAt = [self tracksClaudeStatus] ? _statusAttemptedAt + AUBPollInterval
+                                            : INFINITY;
+  double deadline = MIN(_pollUsageAt, _pollStatusAt);
   deadline = MIN(deadline, now + AUBPollInterval);
   dispatch_source_set_timer(
       _pollTimer,
@@ -383,8 +385,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   // process, which costs more than fetching one half slightly early.
   double horizon = AUBNow() + (double)(AUBPollLeeway / NSEC_PER_SEC);
   bool wantsUsage = horizon >= _pollUsageAt;
-  bool wantsStatus = [self tracksClaudeStatus] &&
-                     horizon >= _statusAttemptedAt + AUBPollInterval;
+  bool wantsStatus = horizon >= _pollStatusAt;
   if (wantsUsage || wantsStatus)
     [self refreshUsage:wantsUsage status:wantsStatus];
   [self schedulePoll];
@@ -468,6 +469,14 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
            sizeof(_snapshot.statusComponents));
     _snapshot.statusComponentCount = fetched->statusComponentCount;
     merged = true;
+  }
+  // Losing Claude Code invalidates the status half rather than merely hiding
+  // it, so the snapshot the app caches holds no Claude service state on a
+  // machine that has no Claude.
+  if (merged && ![self tracksClaudeStatus]) {
+    _snapshot.hasStatus = false;
+    _snapshot.statusFetchedAt = 0;
+    _snapshot.statusComponentCount = 0;
   }
 
   if (merged) {

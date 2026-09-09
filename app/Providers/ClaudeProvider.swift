@@ -21,11 +21,15 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// no shell `PATH`, so looking for the `claude` binary would report a machine that
     /// runs Claude Code daily as having none. Neither path consults `CLAUDE_CONFIG_DIR`,
     /// matching `readPlanLabel`, which reads the same config file.
+    private static var configPath: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
+    }
+
     private static var isInstalled: Bool {
-        let home = NSHomeDirectory() as NSString
         let manager = FileManager.default
-        return manager.fileExists(atPath: home.appendingPathComponent(".claude.json"))
-            || manager.fileExists(atPath: home.appendingPathComponent(".claude"))
+        return manager.fileExists(atPath: configPath)
+            || manager.fileExists(
+                atPath: (NSHomeDirectory() as NSString).appendingPathComponent(".claude"))
     }
 
     private struct KeychainCredentials: Decodable {
@@ -213,8 +217,6 @@ final class ClaudeProvider: UsageProvider, Sendable {
         switch process.terminationStatus {
         case 0: break
         case Self.itemNotFoundStatus:
-            // No stored credential: either the CLI is not here at all, or it is and
-            // nobody has run `claude login` yet. Only the second case earns a mention.
             throw Self.isInstalled ? UsageError.notLoggedIn(.claude) : .notInstalled(.claude)
         default: throw UsageError.keychain
         }
@@ -425,8 +427,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// plus re-decoding megabytes on every refresh to recover two strings that change
     /// roughly never is the most expensive thing this provider used to do.
     private static func readPlanLabel() -> String? {
-        let path = (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
-        let url = URL(fileURLWithPath: path)
+        let url = URL(fileURLWithPath: configPath)
 
         let attributes = try? url.resourceValues(forKeys: [
             .fileSizeKey, .contentModificationDateKey,

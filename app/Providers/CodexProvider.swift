@@ -14,10 +14,9 @@ final class CodexProvider: UsageProvider, Sendable {
 
     // MARK: Credentials
 
-    private static var home: String {
+    private static let home =
         ProcessInfo.processInfo.environment["CODEX_HOME"]
-            ?? (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
-    }
+        ?? (NSHomeDirectory() as NSString).appendingPathComponent(".codex")
 
     private static var authPath: String {
         (home as NSString).appendingPathComponent("auth.json")
@@ -177,8 +176,6 @@ final class CodexProvider: UsageProvider, Sendable {
             let credentials = try? JSONDecoder().decode(StoredCredentials.self, from: data),
             !credentials.accessToken.isEmpty
         else {
-            // An install with no usable `auth.json` earns a `codex login` hint; a machine
-            // with no Codex at all earns no mention of Codex anywhere in the UI.
             throw isInstalled ? UsageError.notLoggedIn(.codex) : .notInstalled(.codex)
         }
         return credentials

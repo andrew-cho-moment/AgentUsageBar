@@ -129,10 +129,10 @@ typedef struct {
   AUBProviderState codex;
 } AUBSnapshot;
 
-/// A provider contributes numbers to the menu bar and the panel only once it
-/// has been fetched at least once and is actually signed in. Stated as the two
-/// states that do report, so a state added later stays silent until its own
-/// rendering is written.
+/// A provider reaches the menu bar and the panel once a fetch has given it
+/// something to show, its numbers or its error. Stated as the two states that
+/// do report, so a state added later stays silent until its own rendering is
+/// written.
 static inline bool AUBProviderVisible(const AUBProviderState *provider) {
   return provider->status == AUBProviderStatusReady ||
          provider->status == AUBProviderStatusFailed;
