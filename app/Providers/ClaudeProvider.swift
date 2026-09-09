@@ -14,6 +14,24 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// `security` reports `errSecItemNotFound` as exit 44.
     private static let itemNotFoundStatus: Int32 = 44
 
+    /// Claude Code writes both of these on its first run and keeps them for the life of
+    /// the install: `~/.claude.json` holds the account and per-project history, and
+    /// `~/.claude` holds settings, commands and transcripts. Either one standing is what
+    /// tells the app Claude Code exists here. A menu-bar app launched at login inherits
+    /// no shell `PATH`, so looking for the `claude` binary would report a machine that
+    /// runs Claude Code daily as having none. Neither path consults `CLAUDE_CONFIG_DIR`,
+    /// matching `readPlanLabel`, which reads the same config file.
+    private static var configPath: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
+    }
+
+    private static var isInstalled: Bool {
+        let manager = FileManager.default
+        return manager.fileExists(atPath: configPath)
+            || manager.fileExists(
+                atPath: (NSHomeDirectory() as NSString).appendingPathComponent(".claude"))
+    }
+
     private struct KeychainCredentials: Decodable {
         struct OAuth: Decodable {
             let accessToken: String?
@@ -198,7 +216,8 @@ final class ClaudeProvider: UsageProvider, Sendable {
         }
         switch process.terminationStatus {
         case 0: break
-        case Self.itemNotFoundStatus: throw UsageError.notLoggedIn(.claude)
+        case Self.itemNotFoundStatus:
+            throw Self.isInstalled ? UsageError.notLoggedIn(.claude) : .notInstalled(.claude)
         default: throw UsageError.keychain
         }
         // `security -w` terminates the payload with a newline.
@@ -408,8 +427,7 @@ final class ClaudeProvider: UsageProvider, Sendable {
     /// plus re-decoding megabytes on every refresh to recover two strings that change
     /// roughly never is the most expensive thing this provider used to do.
     private static func readPlanLabel() -> String? {
-        let path = (NSHomeDirectory() as NSString).appendingPathComponent(".claude.json")
-        let url = URL(fileURLWithPath: path)
+        let url = URL(fileURLWithPath: configPath)
 
         let attributes = try? url.resourceValues(forKeys: [
             .fileSizeKey, .contentModificationDateKey,

@@ -104,6 +104,17 @@ static NSString *AUBProviderName(AUBProviderKind kind) {
   return kind == AUBProviderKindClaude ? @"Claude" : @"Codex";
 }
 
+/// The line a provider has earned in the empty state: a command the user can
+/// actually run, or nothing at all when its CLI is not on this Mac.
+static NSString *AUBProviderHint(AUBProviderKind kind,
+                                 const AUBProviderState *provider) {
+  if (!AUBProviderInstalled(provider))
+    return nil;
+  return kind == AUBProviderKindClaude
+             ? @"Run `claude login` to track Claude usage."
+             : @"Run `codex login` to track Codex usage.";
+}
+
 static NSString *AUBManageURL(AUBProviderKind kind) {
   return kind == AUBProviderKindClaude
              ? @"https://claude.ai/settings/usage"
@@ -378,18 +389,27 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                      AUBProviderVisible(&_snapshot->codex);
 
   if (!hasProvider) {
-    if (draw)
-      AUBDrawText(@"👋 No providers signed in", AUBMargin, y, _subheadline);
-    y += 22;
-    if (draw) {
-      AUBDrawText(@"Run `claude login` to track Claude usage.", AUBMargin, y,
-                  _caption);
+    NSString *hints[AUBProviderKindCodex + 1];
+    uint8_t hintCount = 0;
+    for (AUBProviderKind kind = AUBProviderKindClaude;
+         kind <= AUBProviderKindCodex; kind++) {
+      NSString *hint = AUBProviderHint(kind, AUBStateForKind(_snapshot, kind));
+      if (hint != nil)
+        hints[hintCount++] = hint;
     }
-    y += 18;
-    if (draw)
-      AUBDrawText(@"Run `codex login` to track Codex usage.", AUBMargin, y,
-                  _caption);
-    y += 18;
+    if (draw) {
+      AUBDrawText(hintCount == 0 ? @"👋 No agent CLI on this Mac"
+                                 : @"👋 No providers signed in",
+                  AUBMargin, y, _subheadline);
+    }
+    y += 22;
+    if (hintCount == 0)
+      hints[hintCount++] = @"Install Claude Code or Codex to track usage.";
+    for (uint8_t index = 0; index < hintCount; index++) {
+      if (draw)
+        AUBDrawText(hints[index], AUBMargin, y, _caption);
+      y += 18;
+    }
   } else {
     for (AUBProviderKind kind = AUBProviderKindClaude;
          kind <= AUBProviderKindCodex; kind++) {
@@ -476,6 +496,45 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   _heightValid = true;
 }
 
+/// Which Claude services to watch. The snapshot carries a status half only on a
+/// machine that runs Claude Code, so this section appears with the components
+/// it lists rather than as a header over an empty list.
+- (CGFloat)statusSettingsAtY:(CGFloat)y draw:(bool)draw {
+  if (!_snapshot->hasStatus)
+    return y;
+
+  if (draw) {
+    [NSColor.separatorColor setFill];
+    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
+  }
+  y += 14;
+  if (draw) {
+    AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
+                _caption);
+  }
+  y += 18;
+  if (draw) {
+    AUBDrawText(@"At least one service must remain selected.", AUBMargin + 10,
+                y, _caption2);
+  }
+  y += 24;
+  for (uint8_t index = 0; index < _snapshot->statusComponentCount; index++) {
+    const AUBStatusComponent *component = &_snapshot->statusComponents[index];
+    if (draw) {
+      AUBDrawCheckbox(component->tracked, AUBMargin + 10, y + 1);
+      AUBDrawText(AUBString(component->name), AUBMargin + 28, y, _caption2);
+      AUBDrawRight(AUBComponentStatusLabel(component->status),
+                   AUBWidth - AUBMargin - 10, y, _caption2);
+      [self
+          addAction:AUBActionToggleStatusComponent
+           argument:index
+               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 22)];
+    }
+    y += 24;
+  }
+  return y;
+}
+
 - (CGFloat)settingsAtY:(CGFloat)y draw:(bool)draw {
   uint8_t budgetCandidateCount = AUBBudgetCandidateCount(_snapshot);
   bool shortcutConflict = [_delegate usagePanelViewShortcutConflicted:self];
@@ -518,8 +577,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y += 20;
   if (budgetCandidateCount == 0) {
     if (draw) {
-      AUBDrawText(@"Both providers report their own limits.", AUBMargin + 10, y,
-                  _caption2);
+      AUBDrawText(@"Each signed-in provider reports its own limit.",
+                  AUBMargin + 10, y, _caption2);
     }
     y += 20;
   } else {
@@ -564,35 +623,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
   }
 
-  if (draw) {
-    [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
-  }
-  y += 14;
-  if (draw) {
-    AUBDrawText(@"Claude status: services to track", AUBMargin + 10, y,
-                _caption);
-  }
-  y += 18;
-  if (draw) {
-    AUBDrawText(@"At least one service must remain selected.", AUBMargin + 10,
-                y, _caption2);
-  }
-  y += 24;
-  for (uint8_t index = 0; index < _snapshot->statusComponentCount; index++) {
-    const AUBStatusComponent *component = &_snapshot->statusComponents[index];
-    if (draw) {
-      AUBDrawCheckbox(component->tracked, AUBMargin + 10, y + 1);
-      AUBDrawText(AUBString(component->name), AUBMargin + 28, y, _caption2);
-      AUBDrawRight(AUBComponentStatusLabel(component->status),
-                   AUBWidth - AUBMargin - 10, y, _caption2);
-      [self
-          addAction:AUBActionToggleStatusComponent
-           argument:index
-               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 22)];
-    }
-    y += 24;
-  }
+  y = [self statusSettingsAtY:y draw:draw];
 
   if (draw) {
     [NSColor.separatorColor setFill];

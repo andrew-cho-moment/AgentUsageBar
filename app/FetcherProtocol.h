@@ -25,6 +25,11 @@ typedef enum : uint8_t {
   AUBProviderStatusReady,
   AUBProviderStatusSignedOut,
   AUBProviderStatusFailed,
+  /// This machine has no installation of the provider's CLI, so the app has no
+  /// account to report on and says nothing about it anywhere. Appended rather
+  /// than sorted into the ladder because a cached snapshot stores these values
+  /// raw, and inserting one would change what an existing cache means.
+  AUBProviderStatusNotInstalled,
 } AUBProviderStatus;
 
 typedef enum : uint8_t {
@@ -124,11 +129,22 @@ typedef struct {
   AUBProviderState codex;
 } AUBSnapshot;
 
-/// A provider contributes nothing to the menu bar or the panel until it has
-/// been fetched at least once and is actually signed in.
+/// A provider reaches the menu bar and the panel once a fetch has given it
+/// something to show, its numbers or its error. Stated as the two states that
+/// do report, so a state added later stays silent until its own rendering is
+/// written.
 static inline bool AUBProviderVisible(const AUBProviderState *provider) {
-  return provider->status != AUBProviderStatusSignedOut &&
-         provider->status != AUBProviderStatusPending;
+  return provider->status == AUBProviderStatusReady ||
+         provider->status == AUBProviderStatusFailed;
+}
+
+/// Whether the provider belongs on screen at all. A provider that is installed
+/// but signed out still earns its sign-in hint and, for Claude, its service
+/// status; one that was never installed earns no mention of itself. A provider
+/// not yet fetched counts as installed, because the first fetch is what
+/// decides.
+static inline bool AUBProviderInstalled(const AUBProviderState *provider) {
+  return provider->status != AUBProviderStatusNotInstalled;
 }
 
 /// Which halves of the snapshot one helper run produces. `All` exists so that

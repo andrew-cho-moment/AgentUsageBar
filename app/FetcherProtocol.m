@@ -232,6 +232,8 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
           return false;
       } else if (strcmp(fields[2], "signed_out") == 0) {
         provider->status = AUBProviderStatusSignedOut;
+      } else if (strcmp(fields[2], "not_installed") == 0) {
+        provider->status = AUBProviderStatusNotInstalled;
       } else if (strcmp(fields[2], "failed") == 0) {
         provider->status = AUBProviderStatusFailed;
         if (!AUBCopy(provider->error, sizeof(provider->error), fields[3]))

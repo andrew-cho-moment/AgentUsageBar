@@ -75,6 +75,17 @@ int main(int argc, char **argv) {
   AUBExpect("usage rejects combined output", both, AUBFetcherModeUsage, false);
   AUBExpect("status rejects combined output", both, AUBFetcherModeStatus,
             false);
+  AUBExpect("not installed",
+            "V\t1\nP\tclaude\tnot_installed\t\n"
+            "P\tcodex\tnot_installed\t\nD\t1\n",
+            AUBFetcherModeUsage, true);
+  // A provider with no installation reports no meters, so a window record
+  // against one is a fetcher that contradicted itself.
+  AUBExpect("window against a not-installed provider",
+            "V\t1\nP\tclaude\tnot_installed\t\n"
+            "W\tclaude\tsession\tSession\t1\t\t1\n"
+            "P\tcodex\tsigned_out\t\nD\t1\n",
+            AUBFetcherModeUsage, false);
   AUBExpect("all rejects a lone provider",
             "V\t1\nP\tclaude\tsigned_out\t\n"
             "S\tnone\tOperational\tTracks Claude\t1\nD\t1\n",
@@ -128,6 +139,36 @@ int main(int argc, char **argv) {
     failures++;
   }
   checks++;
+
+  // The two states the UI renders numbers for, and the three it does not.
+  {
+    AUBProviderState provider = {0};
+    const struct {
+      const char *name;
+      AUBProviderStatus status;
+      bool visible;
+      bool installed;
+    } cases[] = {
+        {"pending", AUBProviderStatusPending, false, true},
+        {"ready", AUBProviderStatusReady, true, true},
+        {"signed out", AUBProviderStatusSignedOut, false, true},
+        {"failed", AUBProviderStatusFailed, true, true},
+        {"not installed", AUBProviderStatusNotInstalled, false, false},
+    };
+    for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); index++) {
+      provider.status = cases[index].status;
+      checks++;
+      if (AUBProviderVisible(&provider) != cases[index].visible) {
+        fprintf(stderr, "%s: wrong visibility\n", cases[index].name);
+        failures++;
+      }
+      checks++;
+      if (AUBProviderInstalled(&provider) != cases[index].installed) {
+        fprintf(stderr, "%s: wrong installed state\n", cases[index].name);
+        failures++;
+      }
+    }
+  }
 
   if (failures != 0)
     return 1;

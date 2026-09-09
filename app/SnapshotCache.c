@@ -50,7 +50,7 @@ static bool AUBBudgetValid(const AUBBudgetReading *budget) {
 
 static bool AUBProviderValid(const AUBProviderState *provider) {
   if (provider->status == AUBProviderStatusPending ||
-      provider->status > AUBProviderStatusFailed ||
+      provider->status > AUBProviderStatusNotInstalled ||
       provider->windowCount > AUBMaxWindows ||
       !AUBTerminated(provider->plan, sizeof(provider->plan)) ||
       !AUBTerminated(provider->error, sizeof(provider->error)) ||
@@ -83,6 +83,11 @@ bool AUBSnapshotValidForCache(const AUBSnapshot *snapshot) {
   }
   if (!snapshot->hasStatus)
     return snapshot->statusComponentCount == 0;
+  // status.claude.com describes Claude's services, so a snapshot that reports
+  // no Claude installation and carries a status half is one this app never
+  // wrote.
+  if (snapshot->claude.status == AUBProviderStatusNotInstalled)
+    return false;
   if (snapshot->statusIndicator > AUBStatusIndicatorCritical ||
       snapshot->statusComponentCount > AUBMaxStatusComponents ||
       !isfinite(snapshot->statusFetchedAt) || snapshot->statusFetchedAt <= 0 ||

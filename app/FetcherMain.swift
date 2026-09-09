@@ -151,11 +151,11 @@ struct FetcherMain {
     }
 
     private static func emit(_ provider: Provider, error: Error) {
-        if case UsageError.notLoggedIn = error {
-            emit("P", provider.rawValue, "signed_out", "")
-            return
+        switch error as? UsageError {
+        case .notLoggedIn: emit("P", provider.rawValue, "signed_out", "")
+        case .notInstalled: emit("P", provider.rawValue, "not_installed", "")
+        default: emit("P", provider.rawValue, "failed", field(error.localizedDescription))
         }
-        emit("P", provider.rawValue, "failed", field(error.localizedDescription))
     }
 
     private static func emit(_ fields: String...) {
