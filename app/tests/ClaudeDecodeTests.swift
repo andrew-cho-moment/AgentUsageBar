@@ -130,7 +130,49 @@ import Foundation
             failures += 1
         }
 
+        homeTests()
+
         if failures != 0 { exit(1) }
         print("\(checks) Claude decode tests passed")
+    }
+
+    /// The three ways a provider can have no credential. Conflating any two of them
+    /// either hides a working CLI or nags a machine that never had one.
+    static func homeTests() {
+        let present = FileManager.default.temporaryDirectory.path
+        let absent = (present as NSString).appendingPathComponent("no-such-agent-folder")
+
+        expectHome(
+            AgentHome(configuredPath: present, environmentPath: nil, defaultPath: absent),
+            path: present, error: "Not signed in to Claude")
+        expectHome(
+            AgentHome(configuredPath: absent, environmentPath: nil, defaultPath: present),
+            path: absent, error: "Claude folder is missing: \(absent)")
+        expectHome(
+            AgentHome(configuredPath: nil, environmentPath: nil, defaultPath: absent),
+            path: absent, error: "Claude is not installed")
+        // The setting exists because the environment is invisible at login, so it wins.
+        expectHome(
+            AgentHome(configuredPath: present, environmentPath: absent, defaultPath: absent),
+            path: present, error: "Not signed in to Claude")
+        expectHome(
+            AgentHome(configuredPath: nil, environmentPath: present, defaultPath: absent),
+            path: present, error: "Not signed in to Claude")
+    }
+
+    static func expectHome(_ home: AgentHome, path: String, error: String) {
+        checks += 1
+        if home.path != path {
+            FileHandle.standardError.write(
+                Data("home resolved to \(home.path), expected \(path)\n".utf8))
+            failures += 1
+        }
+        checks += 1
+        let actual = home.missingCredential(.claude).localizedDescription
+        if actual != error {
+            FileHandle.standardError.write(
+                Data("home reported \"\(actual)\", expected \"\(error)\"\n".utf8))
+            failures += 1
+        }
     }
 }

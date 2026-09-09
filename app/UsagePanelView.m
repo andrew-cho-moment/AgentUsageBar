@@ -20,6 +20,9 @@ typedef NS_ENUM(uint8_t, AUBAction) {
   AUBActionEditBudget,            // argument: AUBProviderKind
   AUBActionSetBudget,             // argument: AUBProviderKind
   AUBActionClearBudget,           // argument: AUBProviderKind
+  AUBActionEditHome,              // argument: AUBProviderKind
+  AUBActionSetHome,               // argument: AUBProviderKind
+  AUBActionClearHome,             // argument: AUBProviderKind
   AUBActionAppearance,            // argument: AUBAppearanceMode
 };
 
@@ -32,7 +35,7 @@ typedef struct {
 /// Headroom over the worst case (refresh, settings, 3 toggles, 2 manage links,
 /// 6 budget controls, 3 appearance segments, one row per status component) so
 /// that adding a control cannot silently push the last row past the limit.
-enum { AUBMaxActions = AUBMaxStatusComponents + 24 };
+enum { AUBMaxActions = AUBMaxStatusComponents + 32 };
 
 static const CGFloat AUBWidth = 360;
 static const CGFloat AUBMargin = 16;
@@ -100,6 +103,17 @@ static void AUBDrawCheckbox(bool enabled, CGFloat x, CGFloat y) {
   AUBDrawText(@"✓", x + 2, y - 1, AUBCheckAttributes());
 }
 
+/// Manual text entry costs a first responder and a key filter, so the panel
+/// runs one editor and names the field it currently holds.
+typedef enum : uint8_t {
+  AUBEditorNone,
+  AUBEditorBudget,
+  AUBEditorHome,
+} AUBEditorField;
+
+/// Sized for a path, which is the longer of the two things this editor holds.
+enum { AUBEditorInputCapacity = 512 };
+
 static NSString *AUBProviderName(AUBProviderKind kind) {
   return kind == AUBProviderKindClaude ? @"Claude" : @"Codex";
 }
@@ -113,6 +127,22 @@ static NSString *AUBProviderHint(AUBProviderKind kind,
   return kind == AUBProviderKindClaude
              ? @"Run `claude login` to track Claude usage."
              : @"Run `codex login` to track Codex usage.";
+}
+
+/// The tail of a path, which is the end that says which folder this is, fitted
+/// to `width` with a leading ellipsis when the whole path does not fit.
+static NSString *
+AUBFitTail(NSString *text, CGFloat width,
+           NSDictionary<NSAttributedStringKey, id> *attributes) {
+  if ([text sizeWithAttributes:attributes].width <= width)
+    return text;
+  for (NSUInteger drop = 1; drop < text.length; drop++) {
+    NSString *candidate =
+        [@"…" stringByAppendingString:[text substringFromIndex:drop]];
+    if ([candidate sizeWithAttributes:attributes].width <= width)
+      return candidate;
+  }
+  return @"…";
 }
 
 static NSString *AUBManageURL(AUBProviderKind kind) {
@@ -257,9 +287,9 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   CGFloat _measuredHeight;
   bool _heightValid;
   bool _showingSettings;
-  bool _editingBudget;
-  AUBProviderKind _budgetEditorKind;
-  char _budgetInput[24];
+  AUBEditorField _editorField;
+  AUBProviderKind _editorKind;
+  char _editorInput[AUBEditorInputCapacity];
   NSDictionary<NSAttributedStringKey, id> *_headline;
   NSDictionary<NSAttributedStringKey, id> *_subheadline;
   NSDictionary<NSAttributedStringKey, id> *_subheadlineBold;
@@ -496,6 +526,62 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   _heightValid = true;
 }
 
+/// Where each CLI keeps its state. An app launched at login inherits no shell
+/// environment, so a machine that moved its agent state can be read only from a
+/// setting the app holds itself.
+- (CGFloat)homeSettingsAtY:(CGFloat)y draw:(bool)draw {
+  if (draw) {
+    [NSColor.separatorColor setFill];
+    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
+  }
+  y += 14;
+  if (draw)
+    AUBDrawText(@"Agent folders", AUBMargin + 10, y, _caption);
+  y += 18;
+  if (draw) {
+    AUBDrawText(@"Empty reads `~/.claude` and `~/.codex`.", AUBMargin + 10, y,
+                _caption2);
+  }
+  y += 24;
+
+  for (AUBProviderKind kind = AUBProviderKindClaude;
+       kind <= AUBProviderKindCodex; kind++) {
+    NSRect field = NSMakeRect(AUBMargin + 70, y - 3, 156, 22);
+    if (draw) {
+      bool editing = [self isEditing:AUBEditorHome for:kind];
+      NSString *configured = [_delegate usagePanelView:self
+                               homeOverrideForProvider:kind];
+      AUBDrawText(AUBProviderName(kind), AUBMargin + 10, y, _caption2);
+      [(editing ? NSColor.controlAccentColor
+                : NSColor.tertiaryLabelColor) setStroke];
+      [[NSBezierPath bezierPathWithRoundedRect:field xRadius:4
+                                       yRadius:4] stroke];
+      NSString *input = @"";
+      if (editing) {
+        input = AUBString(_editorInput);
+      } else if (configured.length > 0) {
+        input = configured.stringByAbbreviatingWithTildeInPath;
+      }
+      NSDictionary *inputAttributes = input.length == 0 ? _caption2 : _caption;
+      AUBDrawText(AUBFitTail(input.length == 0 ? @"default" : input,
+                             NSWidth(field) - 12, inputAttributes),
+                  NSMinX(field) + 6, y, inputAttributes);
+      [self addAction:AUBActionEditHome argument:kind rect:field];
+
+      NSRect set = NSMakeRect(NSMaxX(field) + 8, y - 3, 34, 22);
+      AUBDrawText(@"Set", NSMinX(set) + 6, y, _caption);
+      [self addAction:AUBActionSetHome argument:kind rect:set];
+      if (configured.length > 0) {
+        NSRect clear = NSMakeRect(NSMaxX(set) + 6, y - 3, 44, 22);
+        AUBDrawText(@"Clear", NSMinX(clear) + 4, y, _caption);
+        [self addAction:AUBActionClearHome argument:kind rect:clear];
+      }
+    }
+    y += 26;
+  }
+  return y;
+}
+
 /// Which Claude services to watch. The snapshot carries a status half only on a
 /// machine that runs Claude Code, so this section appears with the components
 /// it lists rather than as a header over an empty list.
@@ -589,7 +675,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
         continue;
       NSRect field = NSMakeRect(AUBMargin + 70, y - 3, 96, 22);
       if (draw) {
-        bool editing = [self isEditingBudgetFor:kind];
+        bool editing = [self isEditing:AUBEditorBudget for:kind];
         AUBDrawText(AUBProviderName(kind), AUBMargin + 10, y, _caption2);
         [(editing ? NSColor.controlAccentColor
                   : NSColor.tertiaryLabelColor) setStroke];
@@ -597,7 +683,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                                          yRadius:4] stroke];
         NSString *input = @"";
         if (editing) {
-          input = AUBString(_budgetInput);
+          input = AUBString(_editorInput);
         } else if (provider->budget.overridden) {
           double value = (double)provider->budget.limitMinor /
                          (double)AUBScale(provider->budget.exponent);
@@ -623,6 +709,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
   }
 
+  y = [self homeSettingsAtY:y draw:draw];
   y = [self statusSettingsAtY:y draw:draw];
 
   if (draw) {
@@ -813,34 +900,56 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       (AUBActionRect){.rect = rect, .action = action, .argument = argument};
 }
 
-- (bool)isEditingBudgetFor:(AUBProviderKind)kind {
-  return _editingBudget && _budgetEditorKind == kind;
+- (bool)isEditing:(AUBEditorField)field for:(AUBProviderKind)kind {
+  return _editorField == field && _editorKind == kind;
 }
 
-- (void)beginBudgetEditing:(AUBProviderKind)kind {
-  _editingBudget = true;
-  _budgetEditorKind = kind;
-  const AUBBudgetReading *budget = &AUBStateForKind(_snapshot, kind)->budget;
-  if (budget->overridden) {
-    double value =
-        (double)budget->limitMinor / (double)AUBScale(budget->exponent);
-    snprintf(_budgetInput, sizeof(_budgetInput), "%.*f", budget->exponent,
-             value);
-  } else {
-    _budgetInput[0] = '\0';
+- (void)beginEditing:(AUBEditorField)field for:(AUBProviderKind)kind {
+  _editorField = field;
+  _editorKind = kind;
+  _editorInput[0] = '\0';
+  if (field == AUBEditorBudget) {
+    const AUBBudgetReading *budget = &AUBStateForKind(_snapshot, kind)->budget;
+    if (budget->overridden) {
+      double value =
+          (double)budget->limitMinor / (double)AUBScale(budget->exponent);
+      snprintf(_editorInput, sizeof(_editorInput), "%.*f", budget->exponent,
+               value);
+    }
+  } else if (field == AUBEditorHome) {
+    NSString *configured = [_delegate usagePanelView:self
+                             homeOverrideForProvider:kind];
+    if (configured.length > 0)
+      [self setEditorText:configured.stringByAbbreviatingWithTildeInPath];
   }
   [self.window makeFirstResponder:self];
   [self setNeedsDisplay:YES];
 }
 
-- (void)commitBudgetEditingFor:(AUBProviderKind)kind {
-  if (![self isEditingBudgetFor:kind])
-    [self beginBudgetEditing:kind];
+- (void)endEditing {
+  _editorField = AUBEditorNone;
+  _editorInput[0] = '\0';
+  [self setNeedsDisplay:YES];
+}
+
+- (void)commit:(AUBEditorField)field for:(AUBProviderKind)kind {
+  if (![self isEditing:field for:kind]) {
+    [self beginEditing:field for:kind];
+    return;
+  }
+  if (field == AUBEditorBudget) {
+    [self commitBudgetFor:kind];
+  } else if (field == AUBEditorHome) {
+    [self commitHomeFor:kind];
+  }
+}
+
+- (void)commitBudgetFor:(AUBProviderKind)kind {
   char *end = NULL;
-  double value = strtod(_budgetInput, &end);
+  double value = strtod(_editorInput, &end);
   const AUBBudgetReading *budget = &AUBStateForKind(_snapshot, kind)->budget;
   int64_t scale = AUBScale(budget->exponent);
-  if (_budgetInput[0] == '\0' || end == _budgetInput || *end != '\0' ||
+  if (_editorInput[0] == '\0' || end == _editorInput || *end != '\0' ||
       !isfinite(value) || value <= 0 ||
       value > (double)LLONG_MAX / (double)scale) {
     NSBeep();
@@ -849,9 +958,22 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   [_delegate usagePanelView:self
       setBudgetOverrideMinor:llround(value * (double)scale)
                  forProvider:kind];
-  _editingBudget = false;
-  _budgetInput[0] = '\0';
-  [self setNeedsDisplay:YES];
+  [self endEditing];
+}
+
+/// An emptied field means the CLI's own default, which is the same request the
+/// Clear button makes. A path the app cannot read leaves the field in editing,
+/// so the user corrects what they typed rather than losing it.
+- (void)commitHomeFor:(AUBProviderKind)kind {
+  NSString *path = [AUBString(_editorInput)
+      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  if (path.length == 0) {
+    [_delegate usagePanelView:self clearHomeOverrideForProvider:kind];
+    [self endEditing];
+    return;
+  }
+  if ([_delegate usagePanelView:self setHomeOverride:path forProvider:kind])
+    [self endEditing];
 }
 
 - (void)mouseDown:(NSEvent *)event {
@@ -900,14 +1022,24 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
           openURL:[NSURL URLWithString:AUBManageURL(argument)]];
       return;
     case AUBActionEditBudget:
-      [self beginBudgetEditing:argument];
+      [self beginEditing:AUBEditorBudget for:argument];
       return;
     case AUBActionSetBudget:
-      [self commitBudgetEditingFor:argument];
+      [self commit:AUBEditorBudget for:argument];
       return;
     case AUBActionClearBudget:
-      _editingBudget = false;
+      [self endEditing];
       [_delegate usagePanelView:self clearBudgetOverrideForProvider:argument];
+      return;
+    case AUBActionEditHome:
+      [self beginEditing:AUBEditorHome for:argument];
+      return;
+    case AUBActionSetHome:
+      [self commit:AUBEditorHome for:argument];
+      return;
+    case AUBActionClearHome:
+      [self endEditing];
+      [_delegate usagePanelView:self clearHomeOverrideForProvider:argument];
       return;
     case AUBActionAppearance:
       [_delegate usagePanelView:self setAppearanceMode:argument];
@@ -917,35 +1049,80 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
 }
 
 - (void)keyDown:(NSEvent *)event {
-  if (!_editingBudget) {
+  if (_editorField == AUBEditorNone) {
     [super keyDown:event];
     return;
   }
   if (event.keyCode == 36 || event.keyCode == 76) {
-    [self commitBudgetEditingFor:_budgetEditorKind];
+    [self commit:_editorField for:_editorKind];
+    return;
+  }
+  if (event.keyCode == 53) {
+    [self endEditing];
     return;
   }
   if (event.keyCode == 51) {
-    size_t length = strlen(_budgetInput);
-    if (length > 0)
-      _budgetInput[length - 1] = '\0';
-    [self setNeedsDisplay:YES];
+    [self deleteLastCharacter];
     return;
   }
 
   NSString *characters = event.charactersIgnoringModifiers;
-  if (characters.length != 1)
+  if (characters.length == 0)
     return;
-  unichar character = [characters characterAtIndex:0];
-  bool digit = character >= '0' && character <= '9';
-  bool decimal = character == '.' && strchr(_budgetInput, '.') == NULL;
-  size_t length = strlen(_budgetInput);
-  if ((!digit && !decimal) || length + 1 >= sizeof(_budgetInput)) {
+  if (_editorField == AUBEditorBudget) {
+    unichar character = [characters characterAtIndex:0];
+    bool digit = characters.length == 1 && character >= '0' && character <= '9';
+    bool decimal = characters.length == 1 && character == '.' &&
+                   strchr(_editorInput, '.') == NULL;
+    if (!digit && !decimal) {
+      NSBeep();
+      return;
+    }
+  } else if ([characters
+                 rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet]
+                 .location != NSNotFound) {
     NSBeep();
     return;
   }
-  _budgetInput[length] = (char)character;
-  _budgetInput[length + 1] = '\0';
+  [self appendText:characters];
+}
+
+/// One UTF-8 character at a time, because the buffer is bytes and a path can
+/// hold any of them.
+- (void)appendText:(NSString *)text {
+  const char *bytes = text.UTF8String;
+  if (bytes == NULL)
+    return;
+  size_t length = strlen(_editorInput);
+  size_t added = strlen(bytes);
+  if (length + added + 1 > sizeof(_editorInput)) {
+    NSBeep();
+    return;
+  }
+  memcpy(_editorInput + length, bytes, added + 1);
+  [self setNeedsDisplay:YES];
+}
+
+/// One composed character at a time, so a backspace over an emoji does not
+/// leave half of its surrogate pair behind.
+- (void)deleteLastCharacter {
+  NSString *text = AUBString(_editorInput);
+  if (text.length == 0)
+    return;
+  NSRange last = [text rangeOfComposedCharacterSequenceAtIndex:text.length - 1];
+  [self setEditorText:[text substringToIndex:last.location]];
+}
+
+/// Leaves the text alone when the string has no UTF-8 form or does not fit, so
+/// a fixed buffer can never hold a fragment of one.
+- (void)setEditorText:(NSString *)text {
+  const char *bytes = text.UTF8String;
+  if (bytes == NULL)
+    return;
+  size_t length = strlen(bytes);
+  if (length + 1 > sizeof(_editorInput))
+    return;
+  memcpy(_editorInput, bytes, length + 1);
   [self setNeedsDisplay:YES];
 }
 

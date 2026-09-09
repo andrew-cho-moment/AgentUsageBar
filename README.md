@@ -88,11 +88,14 @@ in, the panel offers a `claude login` or `codex login` hint for each CLI that is
 and omits the one that is not, which is the distinction the `not_installed` provider state
 carries through the protocol.
 
-That same missing environment bounds detection: launched at login the app sees neither
-`CLAUDE_CONFIG_DIR` nor `CODEX_HOME`, so it reads the default locations. A machine that
-keeps its agent state somewhere else and holds no Keychain credential reads as having no
-CLI, which is the state the app can least usefully act on, since the usage fetch would
-not find that state either.
+Settings holds a folder for each provider, so a machine that keeps its agent state
+somewhere other than the default is one setting away from working. Each provider reads
+the folder from Settings first, then `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when a shell
+launched the app, then the location its CLI installs to. The setting comes first because
+an app launched at login inherits no shell environment and cannot see either variable.
+A folder named in Settings that is missing reports itself as a provider error rather than
+reading as an absent CLI: the user chose that folder and can clear the setting, and
+silence would look like a broken app.
 
 The fetcher reads the Claude item by running `/usr/bin/security find-generic-password`,
 which never raises a consent prompt. Claude Code writes that item with
@@ -109,6 +112,7 @@ leaves the app with no code that links `Security.framework`.
 - User-supplied monthly limits when a provider reports spend without a limit
 - Per-service Claude status tracking
 - Only the providers installed on the machine, with the rest silent
+- A configurable folder per provider, defaulting to what each CLI installs to
 - System, Dark, and Light appearance modes
 - Global Command-U panel shortcut
 - Start at login by default, with a saved opt-out
@@ -153,7 +157,7 @@ cd app
 ./build.sh
 ```
 
-The build runs fifty-two deterministic protocol, cache and response-decoding tests,
+The build runs sixty-three deterministic protocol, cache and response-decoding tests,
 compiles size-optimized arm64 binaries with full link-time optimization, strips local
 symbols, signs every helper and the app, and verifies the nested signature. The result
 is `app/build/AgentUsageBar.app`.

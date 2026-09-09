@@ -510,6 +510,13 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   [self schedulePoll];
 }
 
+/// Read by the fetcher through the same defaults domain, which is the only
+/// channel the host has to it besides argv.
+static NSString *AUBHomeOverrideKey(AUBProviderKind kind) {
+  return kind == AUBProviderKindClaude ? @"home_override_claude"
+                                       : @"home_override_codex";
+}
+
 static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
   return kind == AUBProviderKindClaude ? @"budget_override_minor_claude"
                                        : @"budget_override_minor_codex";
@@ -858,6 +865,49 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
   AUBSaveSnapshot(&_snapshot);
   [_usagePanelView reload];
   [self updatePanelSize];
+}
+
+- (NSString *)usagePanelView:(AUBUsagePanelView *)view
+     homeOverrideForProvider:(AUBProviderKind)providerKind {
+  (void)view;
+  return [NSUserDefaults.standardUserDefaults
+      stringForKey:AUBHomeOverrideKey(providerKind)];
+}
+
+/// A stored path that names no folder would report itself on every refresh as a
+/// provider error, so the setting is refused here instead. What the app keeps
+/// is the expanded path, which leaves no doubt about which folder it reads, and
+/// the panel abbreviates it back for display.
+- (BOOL)usagePanelView:(AUBUsagePanelView *)view
+       setHomeOverride:(NSString *)path
+           forProvider:(AUBProviderKind)providerKind {
+  (void)view;
+  NSString *expanded = path.stringByExpandingTildeInPath;
+  BOOL directory = NO;
+  if (expanded.length == 0 || !expanded.absolutePath ||
+      ![NSFileManager.defaultManager fileExistsAtPath:expanded
+                                          isDirectory:&directory] ||
+      !directory) {
+    NSBeep();
+    return NO;
+  }
+  [NSUserDefaults.standardUserDefaults
+      setObject:expanded
+         forKey:AUBHomeOverrideKey(providerKind)];
+  [_usagePanelView reload];
+  // The provider reads a different folder now, so every number the app holds
+  // for it describes the old one.
+  [self refresh];
+  return YES;
+}
+
+- (void)usagePanelView:(AUBUsagePanelView *)view
+    clearHomeOverrideForProvider:(AUBProviderKind)providerKind {
+  (void)view;
+  [NSUserDefaults.standardUserDefaults
+      removeObjectForKey:AUBHomeOverrideKey(providerKind)];
+  [_usagePanelView reload];
+  [self refresh];
 }
 
 - (void)usagePanelView:(AUBUsagePanelView *)view

@@ -13,6 +13,57 @@ enum HTTPClient {
     }()
 }
 
+/// The app's own settings, written by the menu-bar host and read here. The helper is a
+/// bare executable with no Info.plist, so `UserDefaults.standard` would resolve to a
+/// domain of its own rather than the app's.
+enum Settings {
+    static let store = UserDefaults(suiteName: "com.andrewcho.agentusagebar")!
+
+    static func homeOverride(_ provider: Provider) -> String? {
+        guard let value = store.string(forKey: "home_override_\(provider.rawValue)"),
+            !value.isEmpty
+        else { return nil }
+        return (value as NSString).expandingTildeInPath
+    }
+}
+
+/// Where a provider's CLI keeps the state this app reads: the app's own setting first,
+/// then the variable the CLI itself honours, then the folder the CLI installs to. The
+/// setting comes first because an app launched at login inherits no shell environment,
+/// which makes it the only way to read a machine that keeps its agent state elsewhere.
+struct AgentHome: Sendable {
+    let path: String
+    /// True when the user named this folder. That is what separates a setting to fix
+    /// from a CLI that was never installed, and the two report differently.
+    let isConfigured: Bool
+
+    init(configuredPath: String?, environmentPath: String?, defaultPath: String) {
+        path = configuredPath ?? environmentPath ?? defaultPath
+        isConfigured = configuredPath != nil
+    }
+
+    init(provider: Provider, environmentKey: String, defaultFolder: String) {
+        self.init(
+            configuredPath: Settings.homeOverride(provider),
+            environmentPath: ProcessInfo.processInfo.environment[environmentKey],
+            defaultPath: (NSHomeDirectory() as NSString).appendingPathComponent(defaultFolder))
+    }
+
+    var exists: Bool {
+        var directory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &directory)
+            && directory.boolValue
+    }
+
+    /// What a missing credential means here: a folder that is present holds an install
+    /// nobody has signed into, a configured folder that is gone is a stale setting the
+    /// user can see and clear, and a missing default folder is a CLI never installed.
+    func missingCredential(_ provider: Provider) -> UsageError {
+        if exists { return .notLoggedIn(provider) }
+        return isConfigured ? .homeMissing(provider, path: path) : .notInstalled(provider)
+    }
+}
+
 struct APINumber: Decodable, Sendable {
     let value: Double
 

@@ -105,6 +105,10 @@ enum UsageError: LocalizedError {
     /// should hear nothing about Codex, while one that is merely signed out
     /// gets told which command signs it back in.
     case notInstalled(Provider)
+    /// The folder the user named in Settings is gone. Reported rather than
+    /// treated as an absent CLI, because a setting the user made and can clear
+    /// is worth a visible error where silence would look like a broken app.
+    case homeMissing(Provider, path: String)
     case unauthorized
     case http(status: Int)
     case malformed(field: String)
@@ -116,6 +120,12 @@ enum UsageError: LocalizedError {
             return "Not signed in to \(p.displayName)"
         case .notInstalled(let p):
             return "\(p.displayName) is not installed"
+        case .homeMissing(let p, let path):
+            // The host copies this into a 160-byte field and rejects the whole
+            // refresh on overflow, so a deep path reports its tail.
+            let display = (path as NSString).abbreviatingWithTildeInPath
+            let tail = display.count > 80 ? "…" + String(display.suffix(80)) : display
+            return "\(p.displayName) folder is missing: \(tail)"
         case .unauthorized:
             return "Sign-in expired"
         case .http(let status):

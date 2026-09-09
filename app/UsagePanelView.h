@@ -34,6 +34,18 @@ typedef NS_ENUM(uint8_t, AUBProviderKind) {
                forProvider:(AUBProviderKind)provider;
 - (void)usagePanelView:(AUBUsagePanelView *)view
     clearBudgetOverrideForProvider:(AUBProviderKind)provider;
+/// The folder this provider's CLI keeps its state in, as the user set it, or
+/// nil while the app is reading the CLI's own default location.
+- (NSString *)usagePanelView:(AUBUsagePanelView *)view
+     homeOverrideForProvider:(AUBProviderKind)provider;
+/// NO when the path names nothing this app can read, which leaves the field in
+/// editing so the user can correct it rather than storing a setting that fails
+/// on the next refresh.
+- (BOOL)usagePanelView:(AUBUsagePanelView *)view
+       setHomeOverride:(NSString *)path
+           forProvider:(AUBProviderKind)provider;
+- (void)usagePanelView:(AUBUsagePanelView *)view
+    clearHomeOverrideForProvider:(AUBProviderKind)provider;
 @end
 
 @interface AUBUsagePanelView : NSView
