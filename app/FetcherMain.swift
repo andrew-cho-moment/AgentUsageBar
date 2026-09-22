@@ -67,7 +67,7 @@ struct FetcherMain {
     }
 
     private static func fetchProviders() async -> [FetchResult] {
-        let providers: [any UsageProvider] = [ClaudeProvider(), CodexProvider()]
+        let providers: [any UsageProvider] = [ClaudeProvider(), CodexProvider(), CursorProvider()]
         return await withTaskGroup(of: FetchResult.self) { group in
             for provider in providers {
                 group.addTask {

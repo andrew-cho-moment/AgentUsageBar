@@ -1,9 +1,10 @@
 # AgentUsageBar
 
-A macOS menu-bar app for Claude and Codex usage.
+A macOS menu-bar app for Claude, Codex, and Cursor usage.
 
 The menu bar carries the session and weekly percentages each provider reports, marked
-`✳` for Claude and `>_` for Codex. The Codex account below reports only a weekly window:
+`✳` for Claude, `>_` for Codex, and `C` for Cursor’s billing-cycle total.
+The Codex account below reports only a weekly window:
 
 ![The menu-bar item](docs/menubar.png)
 
@@ -29,6 +30,7 @@ that earlier builds left behind, and `./setup.sh --clean` runs that sweep alone.
 
 - Claude session, weekly, scoped, and monthly-budget usage
 - Codex rate-limit windows, model meters, credit balances, and reported budgets
+- Cursor total, API, and Auto usage percentages and billing-cycle reset
 - User-supplied monthly limits when a provider reports spend without a limit
 - Per-service Claude status tracking
 - Only the providers installed on the machine, with the rest silent
@@ -40,12 +42,19 @@ that earlier builds left behind, and `./setup.sh --clean` runs that sweep alone.
 
 ## Credentials
 
-The app stores no credentials. It reads the ones the provider CLIs already own:
+The app stores no credentials. It reads the ones the provider apps already own:
 
 | Provider | Source | Usage endpoint |
 |---|---|---|
 | Claude | Keychain item `Claude Code-credentials` | `api.anthropic.com/api/oauth/usage` |
 | Codex | `~/.codex/auth.json` | `chatgpt.com/backend-api/wham/usage` |
+| Cursor | `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb` | `cursor.com/api/usage-summary` |
+
+Cursor uses the existing IDE login, reading its SQLite database in read-only mode on
+each refresh. No token is saved by this app. Sign in through Cursor if the session
+expires. The dashboard endpoint is undocumented and may change. Settings can override
+the Cursor data folder (the folder containing `User`). Percentages come directly from
+the dashboard: pooled-plan `used / limit` values do not necessarily match those meters.
 
 A provider whose CLI this machine has never had gets no mention anywhere: no menu-bar
 segment, no panel row, no sign-in hint, and for Claude no service-status section. The

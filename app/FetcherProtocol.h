@@ -20,6 +20,7 @@ enum {
 /// the menu bar and the panel pick their headline rows out by these ids.
 #define AUBWindowIDSession "session"
 #define AUBWindowIDWeekly "weekly"
+#define AUBWindowIDMonthly "monthly"
 
 typedef enum : uint8_t {
   AUBProviderStatusPending,
@@ -140,6 +141,7 @@ typedef struct {
   uint8_t statusComponentCount;
   AUBProviderState claude;
   AUBProviderState codex;
+  AUBProviderState cursor;
 } AUBSnapshot;
 
 /// A provider reaches the menu bar and the panel once a fetch has given it

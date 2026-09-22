@@ -13,6 +13,7 @@ typedef NS_ENUM(uint8_t, AUBAppearanceMode) {
 typedef NS_ENUM(uint8_t, AUBProviderKind) {
   AUBProviderKindClaude,
   AUBProviderKindCodex,
+  AUBProviderKindCursor,
 };
 
 @protocol AUBUsagePanelViewDelegate <NSObject>

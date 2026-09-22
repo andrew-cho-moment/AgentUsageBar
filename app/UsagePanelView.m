@@ -36,7 +36,7 @@ typedef struct {
 /// 6 budget controls, 6 folder controls, 3 appearance segments, one row per
 /// status component) so adding a control cannot silently push the last row past
 /// the limit.
-enum { AUBMaxActions = AUBMaxStatusComponents + 32 };
+enum { AUBMaxActions = AUBMaxStatusComponents + 48 };
 
 static const CGFloat AUBWidth = 360;
 static const CGFloat AUBMargin = 16;
@@ -116,6 +116,8 @@ typedef enum : uint8_t {
 enum { AUBEditorInputCapacity = 512 };
 
 static NSString *AUBProviderName(AUBProviderKind kind) {
+  if (kind == AUBProviderKindCursor)
+    return @"Cursor";
   return kind == AUBProviderKindClaude ? @"Claude" : @"Codex";
 }
 
@@ -125,6 +127,8 @@ static NSString *AUBProviderHint(AUBProviderKind kind,
                                  const AUBProviderState *provider) {
   if (!AUBProviderInstalled(provider))
     return nil;
+  if (kind == AUBProviderKindCursor)
+    return @"Sign in to the Cursor app to track usage.";
   return kind == AUBProviderKindClaude
              ? @"Run `claude login` to track Claude usage."
              : @"Run `codex login` to track Codex usage.";
@@ -161,6 +165,8 @@ static void AUBDrawTail(NSString *text, CGFloat x, CGFloat y, CGFloat width,
 }
 
 static NSString *AUBManageURL(AUBProviderKind kind) {
+  if (kind == AUBProviderKindCursor)
+    return @"https://cursor.com/dashboard/usage";
   return kind == AUBProviderKindClaude
              ? @"https://claude.ai/settings/usage"
              : @"https://chatgpt.com/codex/settings/usage";
@@ -168,6 +174,8 @@ static NSString *AUBManageURL(AUBProviderKind kind) {
 
 static const AUBProviderState *AUBStateForKind(const AUBSnapshot *snapshot,
                                                AUBProviderKind kind) {
+  if (kind == AUBProviderKindCursor)
+    return &snapshot->cursor;
   return kind == AUBProviderKindClaude ? &snapshot->claude : &snapshot->codex;
 }
 
@@ -194,7 +202,8 @@ static bool AUBCanOverrideBudget(const AUBProviderState *provider) {
 
 static uint8_t AUBBudgetCandidateCount(const AUBSnapshot *snapshot) {
   return (AUBCanOverrideBudget(&snapshot->claude) ? 1 : 0) +
-         (AUBCanOverrideBudget(&snapshot->codex) ? 1 : 0);
+         (AUBCanOverrideBudget(&snapshot->codex) ? 1 : 0) +
+         (AUBCanOverrideBudget(&snapshot->cursor) ? 1 : 0);
 }
 
 static int64_t AUBScale(uint8_t exponent) {
@@ -431,25 +440,26 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y += 32;
 
   bool hasProvider = AUBProviderVisible(&_snapshot->claude) ||
-                     AUBProviderVisible(&_snapshot->codex);
+                     AUBProviderVisible(&_snapshot->codex) ||
+                     AUBProviderVisible(&_snapshot->cursor);
 
   if (!hasProvider) {
-    NSString *hints[AUBProviderKindCodex + 1];
+    NSString *hints[AUBProviderKindCursor + 1];
     uint8_t hintCount = 0;
     for (AUBProviderKind kind = AUBProviderKindClaude;
-         kind <= AUBProviderKindCodex; kind++) {
+         kind <= AUBProviderKindCursor; kind++) {
       NSString *hint = AUBProviderHint(kind, AUBStateForKind(_snapshot, kind));
       if (hint != nil)
         hints[hintCount++] = hint;
     }
     if (draw) {
-      AUBDrawText(hintCount == 0 ? @"👋 No agent CLI on this Mac"
+      AUBDrawText(hintCount == 0 ? @"👋 No agent installed on this Mac"
                                  : @"👋 No providers signed in",
                   AUBMargin, y, _subheadline);
     }
     y += 22;
     if (hintCount == 0)
-      hints[hintCount++] = @"Install Claude Code or Codex to track usage.";
+      hints[hintCount++] = @"Install Claude Code, Codex or Cursor to track usage.";
     for (uint8_t index = 0; index < hintCount; index++) {
       if (draw)
         AUBDrawText(hints[index], AUBMargin, y, _caption);
@@ -457,7 +467,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
   } else {
     for (AUBProviderKind kind = AUBProviderKindClaude;
-         kind <= AUBProviderKindCodex; kind++) {
+         kind <= AUBProviderKindCursor; kind++) {
       y = [self provider:kind y:y draw:draw];
     }
   }
@@ -548,13 +558,13 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y = [self sectionHeaderAtY:y title:@"Agent folders" draw:draw];
   y += 18;
   if (draw) {
-    AUBDrawText(@"Empty reads the folder each CLI installs to.", AUBMargin + 10,
+    AUBDrawText(@"Empty uses each app’s default folder.", AUBMargin + 10,
                 y, _caption2);
   }
   y += 24;
 
   for (AUBProviderKind kind = AUBProviderKindClaude;
-       kind <= AUBProviderKindCodex; kind++) {
+       kind <= AUBProviderKindCursor; kind++) {
     const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
     // The folder the last fetch actually read, so a row cannot disagree with
     // the provider beside it. Only the one the setting named is this panel's to
@@ -709,7 +719,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     y += 20;
   } else {
     for (AUBProviderKind kind = AUBProviderKindClaude;
-         kind <= AUBProviderKindCodex; kind++) {
+         kind <= AUBProviderKindCursor; kind++) {
       const AUBProviderState *provider = AUBStateForKind(_snapshot, kind);
       if (!AUBCanOverrideBudget(provider))
         continue;
@@ -793,7 +803,7 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     const AUBWindow *window = &provider->windows[index];
     bool headline = strcmp(window->id, AUBWindowIDSession) == 0 ||
                     strcmp(window->id, AUBWindowIDWeekly) == 0;
-    if (!headline && window->percent < 1)
+    if (!headline && kind != AUBProviderKindCursor && window->percent < 1)
       continue;
 
     if (draw) {

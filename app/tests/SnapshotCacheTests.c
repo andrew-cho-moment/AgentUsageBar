@@ -20,6 +20,7 @@ int main(void) {
       .fetchedAt = 1,
       .claude.status = AUBProviderStatusSignedOut,
       .codex.status = AUBProviderStatusSignedOut,
+      .cursor.status = AUBProviderStatusNotInstalled,
   };
   AUBExpect("minimal snapshot", &snapshot, true);
 
