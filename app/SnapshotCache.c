@@ -10,7 +10,7 @@
 
 enum {
   AUBSnapshotCacheMagic = 0x41554243,
-  AUBSnapshotCacheVersion = 1,
+  AUBSnapshotCacheVersion = 2,
 };
 
 typedef struct {
@@ -80,7 +80,7 @@ bool AUBSnapshotValidForCache(const AUBSnapshot *snapshot) {
     return false;
   if (!snapshot->valid || !isfinite(snapshot->fetchedAt) ||
       snapshot->fetchedAt <= 0 || !AUBProviderValid(&snapshot->claude) ||
-      !AUBProviderValid(&snapshot->codex)) {
+      !AUBProviderValid(&snapshot->codex) || !AUBProviderValid(&snapshot->cursor)) {
     return false;
   }
   if (!snapshot->hasStatus)

@@ -5,11 +5,13 @@ import Foundation
 enum Provider: String, Sendable {
     case claude
     case codex
+    case cursor
 
     var displayName: String {
         switch self {
         case .claude: return "Claude"
         case .codex: return "Codex"
+        case .cursor: return "Cursor"
         }
     }
 }
@@ -94,6 +96,7 @@ struct ProviderSnapshot: Sendable {
 enum WindowID {
     static let session = "session"
     static let weekly = "weekly"
+    static let monthly = "monthly"
 }
 
 // MARK: - Errors

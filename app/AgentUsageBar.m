@@ -97,6 +97,8 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
   } else {
     const AUBWindow *session = AUBHeadlineWindow(provider, AUBWindowIDSession);
     const AUBWindow *weekly = AUBHeadlineWindow(provider, AUBWindowIDWeekly);
+    if (session == NULL && weekly == NULL)
+      weekly = AUBHeadlineWindow(provider, AUBWindowIDMonthly);
     if (session == NULL && weekly == NULL) {
       if (!AUBAppendText(group, sizeof(group), "…"))
         return false;
@@ -362,7 +364,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   double now = AUBNow();
   _pollUsageAt = _usageAttemptedAt + AUBPollInterval;
   for (AUBProviderKind kind = AUBProviderKindClaude;
-       kind <= AUBProviderKindCodex; kind++) {
+       kind <= AUBProviderKindCursor; kind++) {
     const AUBProviderState *provider = [self stateForKind:kind];
     for (uint8_t index = 0; index < provider->windowCount; index++) {
       const AUBWindow *window = &provider->windows[index];
@@ -454,6 +456,7 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     _snapshot.fetchedAt = fetched->fetchedAt;
     _snapshot.claude = fetched->claude;
     _snapshot.codex = fetched->codex;
+    _snapshot.cursor = fetched->cursor;
     [self applyBudgetOverrides];
     merged = true;
   }
@@ -513,23 +516,29 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
 /// Read by the fetcher through the same defaults domain, which is the only
 /// channel the host has to it besides argv.
 static NSString *AUBHomeOverrideKey(AUBProviderKind kind) {
+  if (kind == AUBProviderKindCursor)
+    return @"home_override_cursor";
   return kind == AUBProviderKindClaude ? @"home_override_claude"
                                        : @"home_override_codex";
 }
 
 static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
+  if (kind == AUBProviderKindCursor)
+    return @"budget_override_minor_cursor";
   return kind == AUBProviderKindClaude ? @"budget_override_minor_claude"
                                        : @"budget_override_minor_codex";
 }
 
 - (AUBProviderState *)stateForKind:(AUBProviderKind)kind {
+  if (kind == AUBProviderKindCursor)
+    return &_snapshot.cursor;
   return kind == AUBProviderKindClaude ? &_snapshot.claude : &_snapshot.codex;
 }
 
 - (void)applyBudgetOverrides {
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
   for (AUBProviderKind kind = AUBProviderKindClaude;
-       kind <= AUBProviderKindCodex; kind++) {
+       kind <= AUBProviderKindCursor; kind++) {
     AUBProviderState *provider = [self stateForKind:kind];
     if (!provider->budget.present)
       continue;
@@ -556,7 +565,8 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
   char title[256] = {0};
   bool rendered =
       AUBAppendProviderHeadline(title, sizeof(title), &_snapshot.claude, "✳") &&
-      AUBAppendProviderHeadline(title, sizeof(title), &_snapshot.codex, ">_");
+      AUBAppendProviderHeadline(title, sizeof(title), &_snapshot.codex, ">_") &&
+      AUBAppendProviderHeadline(title, sizeof(title), &_snapshot.cursor, "C");
   NSString *value = rendered && title[0] != '\0'
                         ? [NSString stringWithUTF8String:title]
                         : @"—";

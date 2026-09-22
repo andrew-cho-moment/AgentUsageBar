@@ -69,7 +69,8 @@ swiftc \
     Models.swift \
     FetcherSupport.swift \
     Providers/ClaudeProvider.swift \
-    Providers/CodexProvider.swift
+    Providers/CodexProvider.swift \
+    Providers/CursorProvider.swift
 
 xcrun clang \
     -arch arm64 \
@@ -111,6 +112,15 @@ swiftc \
     FetcherSupport.swift \
     Providers/ClaudeProvider.swift
 build/tests/ClaudeDecodeTests
+swiftc \
+    -target arm64-apple-macos14.0 \
+    -warnings-as-errors \
+    -o build/tests/CursorDecodeTests \
+    tests/CursorDecodeTests.swift \
+    Models.swift \
+    FetcherSupport.swift \
+    Providers/CursorProvider.swift
+build/tests/CursorDecodeTests
 xcrun clang \
     -arch arm64 \
     -mmacosx-version-min=14.0 \

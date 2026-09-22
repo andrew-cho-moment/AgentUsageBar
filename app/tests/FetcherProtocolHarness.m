@@ -27,9 +27,10 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  printf("valid=%d claude=%u/%u codex=%u/%u status=%d/%u\n", snapshot.valid,
+  printf("valid=%d claude=%u/%u codex=%u/%u cursor=%u/%u status=%d/%u\n", snapshot.valid,
          snapshot.claude.status, snapshot.claude.windowCount,
-         snapshot.codex.status, snapshot.codex.windowCount, snapshot.hasStatus,
+         snapshot.codex.status, snapshot.codex.windowCount,
+         snapshot.cursor.status, snapshot.cursor.windowCount, snapshot.hasStatus,
          snapshot.statusComponentCount);
   return 0;
 }

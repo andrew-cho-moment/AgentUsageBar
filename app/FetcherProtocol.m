@@ -18,6 +18,8 @@ static AUBProviderState *AUBProvider(AUBSnapshot *snapshot, const char *name) {
     return &snapshot->claude;
   if (strcmp(name, "codex") == 0)
     return &snapshot->codex;
+  if (strcmp(name, "cursor") == 0)
+    return &snapshot->cursor;
   return NULL;
 }
 
@@ -191,6 +193,7 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
   bool hasVersion = false;
   bool hasClaude = false;
   bool hasCodex = false;
+  bool hasCursor = false;
   bool hasDone = false;
   char *lines = text;
   char *line = NULL;
@@ -222,10 +225,14 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
         if (hasClaude)
           return false;
         hasClaude = true;
-      } else {
+      } else if (provider == &parsed.codex) {
         if (hasCodex)
           return false;
         hasCodex = true;
+      } else {
+        if (hasCursor)
+          return false;
+        hasCursor = true;
       }
       if (strcmp(fields[2], "ready") == 0) {
         provider->status = AUBProviderStatusReady;
@@ -428,9 +435,9 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
 
   if (!hasVersion || !hasDone)
     return false;
-  // Usage is all-or-nothing: one provider without the other is a truncated run.
-  if (AUBFetcherModeWantsUsage(mode) != (hasClaude && hasCodex) ||
-      hasClaude != hasCodex) {
+  // Usage is all-or-nothing: every provider must report a state.
+  if (AUBFetcherModeWantsUsage(mode) != (hasClaude && hasCodex && hasCursor) ||
+      hasClaude != hasCodex || hasCodex != hasCursor) {
     return false;
   }
   // A half that was never asked for means the wrong helper ran.
