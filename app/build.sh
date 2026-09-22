@@ -8,6 +8,18 @@ EXECUTABLE="$APP_PATH/Contents/MacOS/$APP_NAME"
 FETCHER="$APP_PATH/Contents/Helpers/AgentUsageFetcher"
 LOCAL_SIGNING_IDENTITY="AgentUsageBar Dev"
 
+case "$#" in
+    0) VERSION="" ;;
+    1)
+        VERSION="$1"
+        [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "version must have the form major.minor.patch" >&2
+            exit 2
+        }
+        ;;
+    *) echo "usage: $0 [major.minor.patch]" >&2; exit 2 ;;
+esac
+
 if [ -z "${CODESIGN_IDENTITY+x}" ]; then
     signing_identities="$(security find-identity -v -p codesigning 2>/dev/null || true)"
     case "$signing_identities" in
@@ -115,6 +127,12 @@ cp AgentUsageBar.icns "$APP_PATH/Contents/Resources/AgentUsageBar.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP_PATH/Contents/Info.plist"
+if [ -n "$VERSION" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
+        "$APP_PATH/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" \
+        "$APP_PATH/Contents/Info.plist"
+fi
 /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AgentUsageBar" \
     "$APP_PATH/Contents/Info.plist" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AgentUsageBar" \

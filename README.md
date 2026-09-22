@@ -13,7 +13,19 @@ Clicking it, or pressing Command-U, opens the panel:
 
 ## Install
 
-Requires macOS 14 or newer, Apple silicon, and the Xcode command-line tools.
+Requires macOS 14 or newer and Apple silicon.
+
+1. Download the DMG from the [latest release][latest-release].
+2. Drag AgentUsageBar to Applications.
+3. Open AgentUsageBar once. macOS will block it because Apple has not notarized it.
+4. Open System Settings → Privacy & Security, click Open Anyway, then confirm Open.
+
+The last two steps are required only on first launch. GitHub publishes each release from
+a clean macOS runner and includes its SHA-256 checksum.
+
+[latest-release]: https://github.com/andrew-cho-moment/AgentUsageBar/releases/latest
+
+To build from source instead, install the Xcode command-line tools and run:
 
 ```bash
 ./setup.sh
@@ -95,3 +107,7 @@ arm64 binaries with link-time optimization, signs every helper and the app, and 
 the nested signature. It writes a 940 KB `app/build/AgentUsageBar.app`, signing with the
 `AgentUsageBar Dev` identity when that exists and ad hoc otherwise. Set
 `CODESIGN_IDENTITY` to override.
+
+`app/package_release.sh 2.0.0` creates an ad hoc-signed DMG and SHA-256 checksum in
+`app/release`. Pushing a semantic-version tag runs the same command and publishes both
+files to GitHub Releases.
