@@ -44,7 +44,6 @@ xcrun clang \
     -Wextra \
     -Werror \
     -framework AppKit \
-    -framework Carbon \
     -Wl,-dead_strip \
     -Wl,-x \
     -o "$EXECUTABLE" \

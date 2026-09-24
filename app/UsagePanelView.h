@@ -21,10 +21,6 @@ typedef NS_ENUM(uint8_t, AUBProviderKind) {
 - (void)usagePanelViewDidChangeContentHeight:(AUBUsagePanelView *)view;
 - (BOOL)usagePanelViewOpenAtLogin:(AUBUsagePanelView *)view;
 - (void)usagePanelView:(AUBUsagePanelView *)view setOpenAtLogin:(BOOL)enabled;
-- (BOOL)usagePanelViewShortcutEnabled:(AUBUsagePanelView *)view;
-- (BOOL)usagePanelViewShortcutConflicted:(AUBUsagePanelView *)view;
-- (void)usagePanelView:(AUBUsagePanelView *)view
-    setShortcutEnabled:(BOOL)enabled;
 - (void)usagePanelView:(AUBUsagePanelView *)view
     toggleStatusComponentAtIndex:(uint8_t)index;
 - (AUBAppearanceMode)usagePanelViewAppearanceMode:(AUBUsagePanelView *)view;

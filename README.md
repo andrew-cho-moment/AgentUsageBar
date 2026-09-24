@@ -23,7 +23,7 @@ The last two steps are required only on first launch.
 - Codex rate-limit windows, model meters, credits, and budgets
 - Cursor total, API, and Auto usage with the billing-cycle reset
 - Five-minute refreshes that keep the last good values during an outage
-- Configurable provider folders, appearance, global Command-U shortcut, and start at login
+- Configurable provider folders, appearance, and start at login
 - No row or menu-bar segment for providers that are not installed
 
 ## Data access

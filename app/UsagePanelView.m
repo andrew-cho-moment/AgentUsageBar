@@ -14,7 +14,6 @@ typedef NS_ENUM(uint8_t, AUBAction) {
   AUBActionRefresh,
   AUBActionToggleSettings,
   AUBActionToggleLogin,
-  AUBActionToggleShortcut,
   AUBActionToggleStatusComponent, // argument: component index
   AUBActionManageProvider,        // argument: AUBProviderKind
   AUBActionEditBudget,            // argument: AUBProviderKind
@@ -32,7 +31,7 @@ typedef struct {
   uint8_t argument;
 } AUBActionRect;
 
-/// Headroom over the worst case (refresh, settings, 3 toggles, 2 manage links,
+/// Headroom over the worst case (refresh, settings, 2 toggles, 2 manage links,
 /// 6 budget controls, 6 folder controls, 3 appearance segments, one row per
 /// status component) so adding a control cannot silently push the last row past
 /// the limit.
@@ -459,7 +458,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
     y += 22;
     if (hintCount == 0)
-      hints[hintCount++] = @"Install Claude Code, Codex or Cursor to track usage.";
+      hints[hintCount++] =
+          @"Install Claude Code, Codex or Cursor to track usage.";
     for (uint8_t index = 0; index < hintCount; index++) {
       if (draw)
         AUBDrawText(hints[index], AUBMargin, y, _caption);
@@ -558,8 +558,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y = [self sectionHeaderAtY:y title:@"Agent folders" draw:draw];
   y += 18;
   if (draw) {
-    AUBDrawText(@"Empty uses each app’s default folder.", AUBMargin + 10,
-                y, _caption2);
+    AUBDrawText(@"Empty uses each app’s default folder.", AUBMargin + 10, y,
+                _caption2);
   }
   y += 24;
 
@@ -679,7 +679,6 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
 
 - (CGFloat)settingsAtY:(CGFloat)y draw:(bool)draw {
   uint8_t budgetCandidateCount = AUBBudgetCandidateCount(_snapshot);
-  bool shortcutConflict = [_delegate usagePanelViewShortcutConflicted:self];
   y += 10;
   if (draw) {
     AUBDrawCheckbox([_delegate usagePanelViewOpenAtLogin:self], AUBMargin + 10,
@@ -691,24 +690,6 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
                rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
   }
   y += 48;
-  if (draw) {
-    AUBDrawCheckbox([_delegate usagePanelViewShortcutEnabled:self],
-                    AUBMargin + 10, y + 1);
-    AUBDrawText(@"Keyboard Shortcut (⌘U)", AUBMargin + 28, y, _caption);
-    AUBDrawText(@"Toggle this popup from anywhere", AUBMargin + 28, y + 17,
-                _caption2);
-    [self addAction:AUBActionToggleShortcut
-               rect:NSMakeRect(AUBMargin + 6, y - 3, AUBContentWidth - 12, 38)];
-  }
-  y += 42;
-  if (shortcutConflict) {
-    if (draw) {
-      AUBDrawText(@"⌘U is already in use, so the shortcut is inactive.",
-                  AUBMargin + 28, y, _warning2);
-    }
-    y += 18;
-  }
-
   y = [self sectionHeaderAtY:y title:@"Monthly budget" draw:draw];
   y += 20;
   if (budgetCandidateCount == 0) {
@@ -1030,15 +1011,6 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       BOOL enabled = ![_delegate usagePanelViewOpenAtLogin:self];
       [_delegate usagePanelView:self setOpenAtLogin:enabled];
       [self reload];
-      return;
-    }
-    // Enabling the shortcut while ⌘U is taken adds a warning row, so the panel
-    // has to grow with it.
-    case AUBActionToggleShortcut: {
-      BOOL enabled = ![_delegate usagePanelViewShortcutEnabled:self];
-      [_delegate usagePanelView:self setShortcutEnabled:enabled];
-      [self reload];
-      [_delegate usagePanelViewDidChangeContentHeight:self];
       return;
     }
     case AUBActionToggleStatusComponent:
