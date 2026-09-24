@@ -25,6 +25,7 @@ SIGNING_IDENTITY="AgentUsageBar Dev"
 # version which wrote it.
 DEAD_KEYS=(
     last_effective_indicator
+    shortcut_enabled
 )
 
 cd "$(dirname "$0")"

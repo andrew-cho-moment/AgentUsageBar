@@ -1,5 +1,4 @@
 #import <AppKit/AppKit.h>
-#import <Carbon/Carbon.h>
 #import <malloc/malloc.h>
 
 #include <dlfcn.h>
@@ -140,6 +139,7 @@ static const double AUBResetSlack = 5;
 /// How stale the panel tolerates on open, where the user is waiting on the
 /// number rather than glancing at the menu bar.
 static const double AUBPanelFreshness = 60;
+static const unsigned short AUBEscapeKeyCode = 53;
 
 /// Pulls a poll deadline back to just past a reset that lands before it, so a
 /// rolled-over meter reads zero rather than its spent percentage.
@@ -171,8 +171,6 @@ static double AUBNow(void) {
   id _globalEventMonitor;
   id _localEventMonitor;
   AUBSnapshot _snapshot;
-  EventHandlerRef _hotKeyHandler;
-  EventHotKeyRef _hotKey;
   CFAbsoluteTime _lastPanelClose;
   dispatch_source_t _pollTimer;
   double _usageAttemptedAt;
@@ -182,8 +180,6 @@ static double AUBNow(void) {
   bool _statusRefreshing;
   bool _statusRefreshPending;
   bool _openAtLogin;
-  bool _shortcutEnabled;
-  bool _shortcutConflict;
   bool _terminating;
   AUBAppearanceMode _appearanceMode;
   uint32_t _statusRevision;
@@ -195,15 +191,6 @@ static double AUBNow(void) {
 - (void)applyBudgetOverrides;
 @end
 
-static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
-                                void *userData) {
-  (void)nextHandler;
-  (void)event;
-  AUBAppDelegate *delegate = (__bridge AUBAppDelegate *)userData;
-  [delegate togglePanel];
-  return noErr;
-}
-
 @implementation AUBAppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -211,9 +198,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
   bool registerLoginItem = [defaults objectForKey:@"open_at_login"] == nil;
   _openAtLogin = !registerLoginItem && [defaults boolForKey:@"open_at_login"];
-  _shortcutEnabled = [defaults objectForKey:@"shortcut_enabled"] == nil
-                         ? true
-                         : [defaults boolForKey:@"shortcut_enabled"];
   NSString *appearance = [defaults stringForKey:@"appearance_mode"];
   if (appearance == nil || [appearance isEqualToString:@"system"]) {
     _appearanceMode = AUBAppearanceModeSystem;
@@ -235,8 +219,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
   _statusItem.button.action = @selector(statusItemClicked:);
   [_statusItem.button
       sendActionOn:NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp];
-  if (_shortcutEnabled)
-    [self registerHotKey];
   if (AUBLoadSnapshot(&_snapshot)) {
     // An hours-old cache is due for a poll immediately, a seconds-old one is
     // not.
@@ -287,31 +269,6 @@ static OSStatus AUBHandleHotKey(EventHandlerCallRef nextHandler, EventRef event,
     dispatch_source_cancel(_pollTimer);
     _pollTimer = nil;
   }
-  if (_hotKey != NULL)
-    UnregisterEventHotKey(_hotKey);
-  if (_hotKeyHandler != NULL)
-    RemoveEventHandler(_hotKeyHandler);
-}
-
-- (void)registerHotKey {
-  if (_hotKeyHandler == NULL) {
-    EventTypeSpec type = {
-        .eventClass = kEventClassKeyboard,
-        .eventKind = kEventHotKeyPressed,
-    };
-    if (InstallEventHandler(GetApplicationEventTarget(), AUBHandleHotKey, 1,
-                            &type, (__bridge void *)self,
-                            &_hotKeyHandler) != noErr) {
-      _shortcutConflict = true;
-      return;
-    }
-  }
-  if (_hotKey != NULL)
-    return;
-  EventHotKeyID identifier = {.signature = 0x41554252, .id = 1};
-  OSStatus status = RegisterEventHotKey(
-      kVK_ANSI_U, cmdKey, identifier, GetApplicationEventTarget(), 0, &_hotKey);
-  _shortcutConflict = status != noErr;
 }
 
 - (void)refresh {
@@ -640,7 +597,7 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
                                      if (delegate == nil)
                                        return event;
                                      if (event.type == NSEventTypeKeyDown &&
-                                         event.keyCode == kVK_Escape) {
+                                         event.keyCode == AUBEscapeKeyCode) {
                                        [delegate closePanel];
                                        return nil;
                                      }
@@ -707,10 +664,9 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
 
 - (void)showContextMenu {
   NSMenu *menu = [NSMenu new];
-  NSMenuItem *show = [[NSMenuItem alloc] initWithTitle:@"Show Usage (⌘U)"
+  NSMenuItem *show = [[NSMenuItem alloc] initWithTitle:@"Show Usage"
                                                 action:@selector(togglePanel)
-                                         keyEquivalent:@"u"];
-  show.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+                                         keyEquivalent:@""];
   show.target = self;
   [menu addItem:show];
   [menu addItem:NSMenuItem.separatorItem];
@@ -761,33 +717,6 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
                                           forKey:@"open_at_login"];
   } else {
     NSBeep();
-  }
-}
-
-- (BOOL)usagePanelViewShortcutEnabled:(AUBUsagePanelView *)view {
-  (void)view;
-  return _shortcutEnabled;
-}
-
-- (BOOL)usagePanelViewShortcutConflicted:(AUBUsagePanelView *)view {
-  (void)view;
-  return _shortcutConflict;
-}
-
-- (void)usagePanelView:(AUBUsagePanelView *)view
-    setShortcutEnabled:(BOOL)enabled {
-  (void)view;
-  _shortcutEnabled = enabled;
-  [NSUserDefaults.standardUserDefaults setBool:enabled
-                                        forKey:@"shortcut_enabled"];
-  if (enabled) {
-    [self registerHotKey];
-  } else {
-    if (_hotKey != NULL) {
-      UnregisterEventHotKey(_hotKey);
-      _hotKey = NULL;
-    }
-    _shortcutConflict = false;
   }
 }
 
