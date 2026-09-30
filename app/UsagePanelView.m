@@ -491,14 +491,20 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
       [dotColor setFill];
       [[NSBezierPath
           bezierPathWithOvalInRect:NSMakeRect(AUBMargin, y + 3, 8, 8)] fill];
-      NSString *summary = _snapshot->statusIndicator == AUBStatusIndicatorNone
-                              ? @"All Claude services operational"
-                              : AUBString(_snapshot->statusDescription);
-      AUBDrawText(summary, AUBMargin + 16, y, _caption);
-      AUBDrawText(AUBString(_snapshot->statusContext), AUBMargin + 16, y + 17,
-                  _caption2);
     }
-    y += 42;
+    NSString *summary = _snapshot->statusIndicator == AUBStatusIndicatorNone
+                            ? @"All Claude services operational"
+                            : AUBString(_snapshot->statusDescription);
+    CGFloat textWidth = AUBContentWidth - 16;
+    y += AUBDrawWrapped(summary, NSMakeRect(AUBMargin + 16, y, textWidth, 0),
+                        _caption, draw);
+    NSString *context = AUBString(_snapshot->statusContext);
+    if (context.length > 0) {
+      y += 3;
+      y += AUBDrawWrapped(context, NSMakeRect(AUBMargin + 16, y, textWidth, 0),
+                          _caption2, draw);
+    }
+    y += 12;
   }
 
   y += 4;
