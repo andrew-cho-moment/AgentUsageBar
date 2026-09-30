@@ -476,7 +476,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     y += 2;
     if (draw) {
       [NSColor.separatorColor setFill];
-      NSRectFill(NSMakeRect(AUBMargin, y, AUBContentWidth, 1));
+      NSRectFillUsingOperation(NSMakeRect(AUBMargin, y, AUBContentWidth, 1),
+                               NSCompositingOperationSourceOver);
     }
     y += 14;
     NSColor *dotColor = NSColor.systemGreenColor;
@@ -504,7 +505,8 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
   y += 4;
   if (draw) {
     [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(AUBMargin, y, AUBContentWidth, 1));
+    NSRectFillUsingOperation(NSMakeRect(AUBMargin, y, AUBContentWidth, 1),
+                             NSCompositingOperationSourceOver);
   }
   y += 14;
 
@@ -636,7 +638,9 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
 - (CGFloat)sectionHeaderAtY:(CGFloat)y title:(NSString *)title draw:(bool)draw {
   if (draw) {
     [NSColor.separatorColor setFill];
-    NSRectFill(NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1));
+    NSRectFillUsingOperation(
+        NSMakeRect(AUBMargin + 8, y, AUBContentWidth - 16, 1),
+        NSCompositingOperationSourceOver);
   }
   y += 14;
   if (draw)
