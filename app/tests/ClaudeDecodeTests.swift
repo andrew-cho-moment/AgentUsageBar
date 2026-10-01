@@ -131,6 +131,7 @@ import Foundation
         }
 
         homeTests()
+        credentialTests()
 
         if failures != 0 { exit(1) }
         print("\(checks) Claude decode tests passed")
@@ -203,5 +204,42 @@ import Foundation
     static func fail(_ message: String) {
         FileHandle.standardError.write(Data((message + "\n").utf8))
         failures += 1
+    }
+
+    static func credentialTests() {
+        let now = Date(timeIntervalSince1970: 1000)
+        let bodies = [
+            (#"{"claudeAiOauth":{"accessToken":"test","expiresAt":1000001}}"#, nil),
+            (
+                #"{"claudeAiOauth":{"accessToken":"test","expiresAt":1000000}}"#,
+                UsageError.claudeSignInExpired
+            ),
+            (#"{"accessToken":"test","expiresAt":999999}"#, UsageError.claudeSignInExpired),
+            (
+                #"{"claudeAiOauth":{"accessToken":"test"}}"#,
+                UsageError.malformed(field: "credential expiry")
+            ),
+            (
+                #"{"claudeAiOauth":{"accessToken":"test"},"expiresAt":1000001}"#,
+                UsageError.malformed(field: "credential expiry")
+            ),
+            (
+                #"{"claudeAiOauth":{"accessToken":"test","expiresAt":-1}}"#,
+                UsageError.malformed(field: "credential expiry")
+            ),
+        ]
+        for (body, expectedError) in bodies {
+            checks += 1
+            do {
+                let token = try ClaudeProvider.accessToken(from: Data(body.utf8), now: now)
+                if expectedError != nil || token != "test" {
+                    fail("credential validation accepted an unexpected token")
+                }
+            } catch {
+                if error.localizedDescription != expectedError?.localizedDescription {
+                    fail("credential validation returned \(error.localizedDescription)")
+                }
+            }
+        }
     }
 }

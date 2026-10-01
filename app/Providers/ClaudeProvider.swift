@@ -34,10 +34,12 @@ final class ClaudeProvider: UsageProvider, Sendable {
     private struct KeychainCredentials: Decodable {
         struct OAuth: Decodable {
             let accessToken: String?
+            let expiresAt: Double?
         }
 
         let claudeAiOauth: OAuth?
         let accessToken: String?
+        let expiresAt: Double?
     }
 
     private struct ClaudeConfig: Decodable {
@@ -223,6 +225,10 @@ final class ClaudeProvider: UsageProvider, Sendable {
         while payload.last == UInt8(ascii: "\n") {
             payload.removeLast()
         }
+        return try accessToken(from: payload, now: Date())
+    }
+
+    static func accessToken(from payload: Data, now: Date) throws -> String {
         guard !payload.isEmpty, payload.count <= maximumCredentialBytes,
             let credentials = try? JSONDecoder().decode(
                 KeychainCredentials.self, from: payload)
@@ -230,10 +236,24 @@ final class ClaudeProvider: UsageProvider, Sendable {
             throw UsageError.malformed(field: "keychain payload")
         }
         // Claude Code nests the token; tolerate a flat shape too.
-        guard let token = credentials.claudeAiOauth?.accessToken ?? credentials.accessToken,
+        let oauth =
+            credentials.claudeAiOauth
+            ?? KeychainCredentials.OAuth(
+                accessToken: credentials.accessToken, expiresAt: credentials.expiresAt)
+        guard let token = oauth.accessToken,
             !token.isEmpty
         else {
             throw UsageError.notLoggedIn(.claude)
+        }
+        guard let expiresAt = oauth.expiresAt,
+            expiresAt.isFinite, expiresAt > 0
+        else {
+            throw UsageError.malformed(field: "credential expiry")
+        }
+        // Claude Code stores expiry in milliseconds. Detect it locally because the
+        // usage endpoint can return HTTP 429 even when the bearer has expired.
+        guard expiresAt / 1000 > now.timeIntervalSince1970 else {
+            throw UsageError.claudeSignInExpired
         }
         return token
     }
@@ -256,7 +276,8 @@ final class ClaudeProvider: UsageProvider, Sendable {
         guard let http = response as? HTTPURLResponse else {
             throw UsageError.malformed(field: "response")
         }
-        if http.statusCode == 401 || http.statusCode == 403 { throw UsageError.unauthorized }
+        if http.statusCode == 401 { throw UsageError.claudeSignInExpired }
+        if http.statusCode == 403 { throw UsageError.unauthorized }
         guard http.statusCode == 200 else { throw UsageError.http(status: http.statusCode) }
         return try Self.snapshot(from: data, planLabel: Self.readPlanLabel())
     }

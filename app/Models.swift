@@ -113,6 +113,7 @@ enum UsageError: LocalizedError {
     /// is worth a visible error where silence would look like a broken app.
     case homeMissing(Provider, path: String)
     case unauthorized
+    case claudeSignInExpired
     case http(status: Int)
     case malformed(field: String)
     case keychain
@@ -128,6 +129,8 @@ enum UsageError: LocalizedError {
             return "\(p.displayName) folder is missing: \(Bounded.utf8(display, bytes: 100))"
         case .unauthorized:
             return "Sign-in expired"
+        case .claudeSignInExpired:
+            return "Claude sign-in expired. Open Claude Code to refresh it."
         case .http(let status):
             return "HTTP \(status)"
         case .malformed(let field):
