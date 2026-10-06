@@ -130,7 +130,7 @@ enum UsageError: LocalizedError {
         case .unauthorized:
             return "Sign-in expired"
         case .claudeSignInExpired:
-            return "Claude sign-in expired. Open Claude Code to refresh it."
+            return "Claude sign-in expired."
         case .http(let status):
             return "HTTP \(status)"
         case .malformed(let field):

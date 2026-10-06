@@ -5,6 +5,7 @@
 #import <string.h>
 
 #import "FetcherProtocol.h"
+#import "ProviderSignIn.h"
 #import "SnapshotCache.h"
 #import "UsagePanelView.h"
 
@@ -90,7 +91,8 @@ static bool AUBAppendProviderHeadline(char *title, size_t capacity,
   int count = snprintf(group, sizeof(group), "%s ", mark);
   if (count < 0 || (size_t)count >= sizeof(group))
     return false;
-  if (provider->status == AUBProviderStatusFailed) {
+  if (provider->status == AUBProviderStatusFailed ||
+      provider->status == AUBProviderStatusSignInExpired) {
     if (!AUBAppendText(group, sizeof(group), "?"))
       return false;
   } else {
@@ -612,8 +614,11 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
                                    }];
 
   double now = AUBNow();
-  bool usageStale =
-      !_snapshot.valid || now - _snapshot.fetchedAt > AUBPanelFreshness;
+  bool usageStale = !_snapshot.valid ||
+                    _snapshot.claude.status == AUBProviderStatusSignInExpired ||
+                    _snapshot.codex.status == AUBProviderStatusSignInExpired ||
+                    _snapshot.cursor.status == AUBProviderStatusSignInExpired ||
+                    now - _snapshot.fetchedAt > AUBPanelFreshness;
   bool statusStale = !_snapshot.hasStatus ||
                      now - _snapshot.statusFetchedAt > AUBPanelFreshness;
   if (usageStale || statusStale)
@@ -702,6 +707,80 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
 - (void)usagePanelViewDidChangeContentHeight:(AUBUsagePanelView *)view {
   (void)view;
   [self updatePanelSize];
+}
+
+- (void)usagePanelView:(AUBUsagePanelView *)view
+      signInToProvider:(AUBProviderKind)provider {
+  (void)view;
+  NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
+  NSString *bundleID = provider == AUBProviderKindCursor
+                           ? @"com.todesktop.230313mzl4w4u92"
+                           : @"com.apple.Terminal";
+  NSURL *application =
+      [workspace URLForApplicationWithBundleIdentifier:bundleID];
+  NSError *error = nil;
+  NSURL *directory = nil;
+  NSURL *scriptURL = nil;
+  if (application == nil) {
+    error = [NSError errorWithDomain:NSCocoaErrorDomain
+                                code:NSFileNoSuchFileError
+                            userInfo:@{
+                              NSLocalizedDescriptionKey :
+                                  @"The sign-in app could not be found."
+                            }];
+  } else if (provider != AUBProviderKindCursor) {
+    directory = [NSURL
+        fileURLWithPath:[NSTemporaryDirectory()
+                            stringByAppendingPathComponent:NSUUID.UUID
+                                                               .UUIDString]
+            isDirectory:YES];
+    NSFileManager *files = NSFileManager.defaultManager;
+    if ([files createDirectoryAtURL:directory
+            withIntermediateDirectories:NO
+                             attributes:@{NSFilePosixPermissions : @0700}
+                                  error:&error]) {
+      scriptURL = [directory URLByAppendingPathComponent:@"Sign in.command"];
+      NSString *script = AUBProviderSignInScript(
+          provider,
+          [NSString stringWithUTF8String:[self stateForKind:provider]->home]);
+      if ([script writeToURL:scriptURL
+                  atomically:YES
+                    encoding:NSUTF8StringEncoding
+                       error:&error])
+        [files setAttributes:@{NSFilePosixPermissions : @0700}
+                ofItemAtPath:scriptURL.path
+                       error:&error];
+    }
+  }
+  if (error != nil) {
+    if (directory != nil)
+      [NSFileManager.defaultManager removeItemAtURL:directory error:NULL];
+    [[NSAlert alertWithError:error] runModal];
+    return;
+  }
+  [self closePanel];
+  NSWorkspaceOpenConfiguration *configuration =
+      NSWorkspaceOpenConfiguration.configuration;
+  void (^completion)(NSRunningApplication *, NSError *) =
+      ^(NSRunningApplication *app, NSError *launchError) {
+        (void)app;
+        if (launchError == nil)
+          return;
+        if (directory != nil)
+          [NSFileManager.defaultManager removeItemAtURL:directory error:NULL];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [[NSAlert alertWithError:launchError] runModal];
+        });
+      };
+  if (scriptURL != nil)
+    [workspace openURLs:@[ scriptURL ]
+        withApplicationAtURL:application
+               configuration:configuration
+           completionHandler:completion];
+  else
+    [workspace openApplicationAtURL:application
+                      configuration:configuration
+                  completionHandler:completion];
 }
 
 - (BOOL)usagePanelViewOpenAtLogin:(AUBUsagePanelView *)view {

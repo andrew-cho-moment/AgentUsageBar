@@ -242,8 +242,11 @@ bool AUBParseFetcherOutput(char *text, AUBFetcherMode mode,
         provider->status = AUBProviderStatusSignedOut;
       } else if (strcmp(fields[2], "not_installed") == 0) {
         provider->status = AUBProviderStatusNotInstalled;
-      } else if (strcmp(fields[2], "failed") == 0) {
-        provider->status = AUBProviderStatusFailed;
+      } else if (strcmp(fields[2], "failed") == 0 ||
+                 strcmp(fields[2], "sign_in_expired") == 0) {
+        provider->status = strcmp(fields[2], "sign_in_expired") == 0
+                               ? AUBProviderStatusSignInExpired
+                               : AUBProviderStatusFailed;
         if (!AUBCopy(provider->error, sizeof(provider->error), fields[3]))
           return false;
       } else {

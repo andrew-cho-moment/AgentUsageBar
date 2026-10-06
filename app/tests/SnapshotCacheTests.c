@@ -24,6 +24,9 @@ int main(void) {
   };
   AUBExpect("minimal snapshot", &snapshot, true);
 
+  snapshot.claude.status = AUBProviderStatusSignInExpired;
+  AUBExpect("expired sign-in", &snapshot, true);
+
   snapshot.claude.status = AUBProviderStatusPending;
   AUBExpect("pending provider", &snapshot, false);
   snapshot.claude.status = AUBProviderStatusSignedOut;

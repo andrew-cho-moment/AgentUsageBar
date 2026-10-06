@@ -168,6 +168,8 @@ struct FetcherMain {
         switch error as? UsageError {
         case .notLoggedIn: emit("P", provider.rawValue, "signed_out", "")
         case .notInstalled: emit("P", provider.rawValue, "not_installed", "")
+        case .unauthorized, .claudeSignInExpired:
+            emit("P", provider.rawValue, "sign_in_expired", field(error.localizedDescription))
         default: emit("P", provider.rawValue, "failed", field(error.localizedDescription))
         }
     }
