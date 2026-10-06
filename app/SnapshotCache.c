@@ -50,7 +50,7 @@ static bool AUBBudgetValid(const AUBBudgetReading *budget) {
 
 static bool AUBProviderValid(const AUBProviderState *provider) {
   if (provider->status == AUBProviderStatusPending ||
-      provider->status > AUBProviderStatusNotInstalled ||
+      provider->status > AUBProviderStatusSignInExpired ||
       provider->windowCount > AUBMaxWindows ||
       provider->homeSource > AUBHomeSourceSetting ||
       !AUBTerminated(provider->home, sizeof(provider->home)) ||
@@ -80,7 +80,8 @@ bool AUBSnapshotValidForCache(const AUBSnapshot *snapshot) {
     return false;
   if (!snapshot->valid || !isfinite(snapshot->fetchedAt) ||
       snapshot->fetchedAt <= 0 || !AUBProviderValid(&snapshot->claude) ||
-      !AUBProviderValid(&snapshot->codex) || !AUBProviderValid(&snapshot->cursor)) {
+      !AUBProviderValid(&snapshot->codex) ||
+      !AUBProviderValid(&snapshot->cursor)) {
     return false;
   }
   if (!snapshot->hasStatus)

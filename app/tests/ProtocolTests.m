@@ -26,8 +26,22 @@ int main(int argc, char **argv) {
     return 2;
   }
   AUBExpect("usage",
-            "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
+            "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_"
+            "out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
             AUBFetcherModeUsage, true);
+  {
+    char fixture[] =
+        "V\t1\nP\tclaude\tsign_in_expired\tClaude sign-in expired.\n"
+        "P\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n";
+    AUBSnapshot snapshot = {0};
+    checks++;
+    if (!AUBParseFetcherOutput(fixture, AUBFetcherModeUsage, &snapshot) ||
+        snapshot.claude.status != AUBProviderStatusSignInExpired ||
+        strcmp(snapshot.claude.error, "Claude sign-in expired.") != 0) {
+      fprintf(stderr, "expired sign-in lost its recovery state or message\n");
+      failures++;
+    }
+  }
   AUBExpect("status",
             "V\t1\nS\tnone\tOperational\tTracks Claude\t1\n"
             "T\tid\tClaude API\toperational\t1\nD\t1\n",
@@ -38,10 +52,12 @@ int main(int argc, char **argv) {
             AUBFetcherModeUsage, false);
   AUBExpect("data before provider",
             "V\t1\nW\tclaude\tsession\tSession\t1\t\t1\n"
-            "P\tclaude\tready\tPro\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
+            "P\tclaude\tready\tPro\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_"
+            "installed\t\nD\t1\n",
             AUBFetcherModeUsage, false);
   AUBExpect("record after done",
-            "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n"
+            "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_"
+            "out\t\nP\tcursor\tnot_installed\t\nD\t1\n"
             "U\tclaude\tlate\n",
             AUBFetcherModeUsage, false);
   AUBExpect("invalid status enum", "V\t1\nS\tunknown\tNope\tNope\t1\nD\t1\n",
@@ -58,13 +74,15 @@ int main(int argc, char **argv) {
             "V\t1\nS\tnone\tOperational\tTracks Claude\t1\nD\t1\n",
             AUBFetcherModeUsage, false);
 
-  const char *both = "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\n"
+  const char *both = "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_"
+                     "out\t\nP\tcursor\tnot_installed\t\n"
                      "S\tnone\tOperational\tTracks Claude\t1\n"
                      "T\tid\tClaude API\toperational\t1\nD\t1\n";
   AUBExpect("all", both, AUBFetcherModeAll, true);
   // A status outage must not discard the usage half that came back fine.
   AUBExpect("all tolerates missing status",
-            "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
+            "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_"
+            "out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
             AUBFetcherModeAll, true);
   // Status alone, though, has nothing left to deliver.
   AUBExpect("status requires status", "V\t1\nD\t1\n", AUBFetcherModeStatus,
@@ -88,7 +106,8 @@ int main(int argc, char **argv) {
             AUBFetcherModeUsage, false);
   AUBExpect("folder record",
             "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t/x\tsetting\n"
-            "P\tcodex\tnot_installed\t\nP\tcursor\tnot_installed\t\nH\tcodex\t/y\tstandard\n"
+            "P\tcodex\tnot_installed\t\nP\tcursor\tnot_installed\t\nH\tcodex\t/"
+            "y\tstandard\n"
             "D\t1\n",
             AUBFetcherModeUsage, true);
   AUBExpect("folder record with an unknown source",
@@ -101,10 +120,12 @@ int main(int argc, char **argv) {
             "V\t1\nH\tclaude\t/x\tsetting\nP\tclaude\tready\tPro\n"
             "P\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
             AUBFetcherModeUsage, false);
-  AUBExpect("duplicate folder record",
-            "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t/x\tsetting\n"
-            "H\tclaude\t/z\tsetting\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
-            AUBFetcherModeUsage, false);
+  AUBExpect(
+      "duplicate folder record",
+      "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t/x\tsetting\n"
+      "H\tclaude\t/"
+      "z\tsetting\nP\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
+      AUBFetcherModeUsage, false);
   AUBExpect("folder record with no path",
             "V\t1\nP\tclaude\tready\tPro\nH\tclaude\t\tsetting\n"
             "P\tcodex\tsigned_out\t\nP\tcursor\tnot_installed\t\nD\t1\n",
@@ -161,7 +182,8 @@ int main(int argc, char **argv) {
             AUBFetcherModeUsage, false);
   AUBExpect("Cursor usage",
             "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\n"
-            "P\tcursor\tready\tEnterprise\nW\tcursor\tmonthly\tTotal usage\t12.5\t\t0\nD\t1\n",
+            "P\tcursor\tready\tEnterprise\nW\tcursor\tmonthly\tTotal "
+            "usage\t12.5\t\t0\nD\t1\n",
             AUBFetcherModeUsage, true);
   AUBExpect("duplicate Cursor",
             "V\t1\nP\tclaude\tsigned_out\t\nP\tcodex\tsigned_out\t\n"
@@ -188,6 +210,7 @@ int main(int argc, char **argv) {
         {"ready", AUBProviderStatusReady, true, true},
         {"signed out", AUBProviderStatusSignedOut, false, true},
         {"failed", AUBProviderStatusFailed, true, true},
+        {"sign-in expired", AUBProviderStatusSignInExpired, true, true},
         {"not installed", AUBProviderStatusNotInstalled, false, false},
     };
     for (size_t index = 0; index < sizeof(cases) / sizeof(cases[0]); index++) {

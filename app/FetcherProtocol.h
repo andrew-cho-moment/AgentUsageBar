@@ -32,6 +32,7 @@ typedef enum : uint8_t {
   /// than sorted into the ladder because a cached snapshot stores these values
   /// raw, and inserting one would change what an existing cache means.
   AUBProviderStatusNotInstalled,
+  AUBProviderStatusSignInExpired,
 } AUBProviderStatus;
 
 /// Who chose the folder a provider's CLI keeps its state in. The panel offers
@@ -150,7 +151,8 @@ typedef struct {
 /// written.
 static inline bool AUBProviderVisible(const AUBProviderState *provider) {
   return provider->status == AUBProviderStatusReady ||
-         provider->status == AUBProviderStatusFailed;
+         provider->status == AUBProviderStatusFailed ||
+         provider->status == AUBProviderStatusSignInExpired;
 }
 
 /// Whether the provider belongs on screen at all. A provider that is installed

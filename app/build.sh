@@ -50,7 +50,8 @@ xcrun clang \
     AgentUsageBar.m \
     FetcherProtocol.m \
     SnapshotCache.c \
-    UsagePanelView.m
+    UsagePanelView.m \
+    ProviderSignIn.m
 
 swiftc \
     -parse-as-library \
@@ -130,6 +131,19 @@ xcrun clang \
     -o build/tests/FetcherProtocolHarness \
     tests/FetcherProtocolHarness.m \
     FetcherProtocol.m
+
+xcrun clang \
+    -arch arm64 \
+    -mmacosx-version-min=14.0 \
+    -fobjc-arc \
+    -Wall \
+    -Wextra \
+    -Werror \
+    -framework AppKit \
+    -o build/tests/ProviderSignInTests \
+    tests/ProviderSignInTests.m \
+    ProviderSignIn.m
+build/tests/ProviderSignInTests
 
 cp Info.plist "$APP_PATH/Contents/Info.plist"
 cp AgentUsageBar.icns "$APP_PATH/Contents/Resources/AgentUsageBar.icns"

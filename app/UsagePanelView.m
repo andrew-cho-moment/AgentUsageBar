@@ -15,6 +15,7 @@ typedef NS_ENUM(uint8_t, AUBAction) {
   AUBActionToggleSettings,
   AUBActionToggleLogin,
   AUBActionToggleStatusComponent, // argument: component index
+  AUBActionSignInProvider,        // argument: AUBProviderKind
   AUBActionManageProvider,        // argument: AUBProviderKind
   AUBActionEditBudget,            // argument: AUBProviderKind
   AUBActionSetBudget,             // argument: AUBProviderKind
@@ -777,10 +778,20 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     AUBDrawText(title, AUBMargin, y, _subheadlineBold);
   y += 24;
 
-  if (provider->status == AUBProviderStatusFailed) {
+  if (provider->status == AUBProviderStatusFailed ||
+      provider->status == AUBProviderStatusSignInExpired) {
     CGFloat height = AUBDrawWrapped(
         AUBString(provider->error),
         NSMakeRect(AUBMargin, y, AUBContentWidth, 0), _warning, draw);
+    if (provider->status == AUBProviderStatusSignInExpired) {
+      if (draw) {
+        [self addAction:AUBActionSignInProvider
+               argument:kind
+                   rect:NSMakeRect(AUBMargin, y, AUBContentWidth, height + 28)];
+        AUBDrawText(@"Sign in →", AUBMargin, y + height + 4, _subheadlineBold);
+      }
+      height += 28;
+    }
     return y + height + 16;
   }
 
@@ -1019,6 +1030,9 @@ static NSString *AUBAmount(int64_t minor, const AUBBudgetReading *budget) {
     }
     case AUBActionToggleStatusComponent:
       [_delegate usagePanelView:self toggleStatusComponentAtIndex:argument];
+      return;
+    case AUBActionSignInProvider:
+      [_delegate usagePanelView:self signInToProvider:argument];
       return;
     case AUBActionManageProvider:
       [NSWorkspace.sharedWorkspace

@@ -17,6 +17,8 @@ typedef NS_ENUM(uint8_t, AUBProviderKind) {
 };
 
 @protocol AUBUsagePanelViewDelegate <NSObject>
+- (void)usagePanelView:(AUBUsagePanelView *)view
+      signInToProvider:(AUBProviderKind)provider;
 - (void)usagePanelViewDidRequestRefresh:(AUBUsagePanelView *)view;
 - (void)usagePanelViewDidChangeContentHeight:(AUBUsagePanelView *)view;
 - (BOOL)usagePanelViewOpenAtLogin:(AUBUsagePanelView *)view;
