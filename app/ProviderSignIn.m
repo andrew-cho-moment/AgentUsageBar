@@ -7,6 +7,17 @@ static NSString *AUBShellQuote(NSString *value) {
                                                         withString:@"'\\''"]];
 }
 
+NSString *AUBCodexSignInHome(NSString *configured, NSString *environment) {
+  NSString *home = configured.length > 0
+                       ? configured.stringByExpandingTildeInPath
+                       : environment;
+  if (home == nil)
+    return [NSHomeDirectory() stringByAppendingPathComponent:@".codex"];
+  return home.absolutePath ? home
+                           : [NSFileManager.defaultManager.currentDirectoryPath
+                                 stringByAppendingPathComponent:home];
+}
+
 NSString *AUBProviderSignInScript(AUBProviderKind provider, NSString *home) {
   NSString *command;
   switch (provider) {
@@ -24,7 +35,7 @@ NSString *AUBProviderSignInScript(AUBProviderKind provider, NSString *home) {
   }
   return [NSString
       stringWithFormat:
-          @"#!/bin/zsh -l\n"
+          @"#!/bin/zsh -il\n"
            "rm -- \"$0\"\nrmdir -- \"${0:h}\"\n"
            "export "
            "PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\n"

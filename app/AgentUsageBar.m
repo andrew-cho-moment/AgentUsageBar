@@ -740,9 +740,16 @@ static NSString *AUBBudgetOverrideKey(AUBProviderKind kind) {
                              attributes:@{NSFilePosixPermissions : @0700}
                                   error:&error]) {
       scriptURL = [directory URLByAppendingPathComponent:@"Sign in.command"];
-      NSString *script = AUBProviderSignInScript(
-          provider,
-          [NSString stringWithUTF8String:[self stateForKind:provider]->home]);
+      NSString *home = nil;
+      if (provider == AUBProviderKindCodex) {
+        const char *environment = getenv("CODEX_HOME");
+        home = AUBCodexSignInHome(
+            [NSUserDefaults.standardUserDefaults
+                stringForKey:AUBHomeOverrideKey(provider)],
+            environment == NULL ? nil
+                                : [NSString stringWithUTF8String:environment]);
+      }
+      NSString *script = AUBProviderSignInScript(provider, home);
       if ([script writeToURL:scriptURL
                   atomically:YES
                     encoding:NSUTF8StringEncoding
